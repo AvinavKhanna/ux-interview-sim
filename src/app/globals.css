@@ -1,5 +1,9 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+/* optional: small reset */
+html, body { height: 100%; }
 :root {
   --background: #ffffff;
   --foreground: #171717;
