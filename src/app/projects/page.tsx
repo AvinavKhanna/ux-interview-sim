@@ -3,8 +3,9 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useOnboarding, mockSuggestPersonas } from '@/context/onboarding';
 import { Button, Card, Labeled, Page, RadioCard, TextArea, Breadcrumb } from '@/components/UI';
+import { supabaseBrowser } from '@/lib/supabase';
+import { mapSuggestionsToPersonas } from '@/lib/mapSuggestions';
 
-const STEPS = ['Project', 'Personas', 'Summary'];
 type Mode = 'project' | 'practice';
 
 function deriveTitle(text: string) {
@@ -25,8 +26,9 @@ export default function ProjectPage() {
   async function next() {
     if (mode === 'practice') {
       const payload = { description: '', genericPractice: true };
-      setProject(payload);          // keep context shape minimal
+      setProject(payload);
       setSelected(null);
+      // keep mock for practice mode (no description context)
       setSuggested(mockSuggestPersonas(payload));
       router.push('/personas');
       return;
@@ -35,29 +37,42 @@ export default function ProjectPage() {
     if (desc.trim().length < 5) return;
     setLoading(true);
     try {
-      const body = {
-        title: deriveTitle(desc),
-        description: desc,
-        domain_tags: [],
-      };
+      // 1) Save project directly with supabaseBrowser (you already have this client)
+      const { data, error } = await supabaseBrowser
+        .from('projects')
+        .insert([{ title: deriveTitle(desc), description: desc, domain_tags: [] }])
+        .select()
+        .single();
 
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || 'Failed to save project');
+      if (error) {
+        alert(error.message || 'Failed to save project');
         return;
       }
 
-      // Store the minimal fields context expects
-      const ctxProject = { description: data.description, genericPractice: false };
+      // Put the minimal shape into context (as your code expects)
+      const ctxProject = { description: data?.description ?? desc, genericPractice: false };
       setProject(ctxProject);
-
       setSelected(null);
-      setSuggested(mockSuggestPersonas(ctxProject));
+
+      // 2) Ask OpenAI for suggestions via your API
+      const res = await fetch('/api/suggest-persona', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: desc.trim() }),
+      });
+
+      let suggestions: any[] = [];
+      if (res.ok) {
+        suggestions = await res.json().catch(() => []);
+      } else {
+        // fail-soft: keep going with mocks if API fails
+        console.warn('suggest-persona failed', await res.text());
+      }
+
+      const mapped = mapSuggestionsToPersonas(suggestions, desc);
+      setSuggested(mapped.length ? mapped : mockSuggestPersonas(ctxProject));
+
+      // 3) Go to Personas step
       router.push('/personas');
     } finally {
       setLoading(false);
@@ -68,7 +83,15 @@ export default function ProjectPage() {
 
   return (
     <Page title="Tell us about your project or interview goal">
-      <Breadcrumb steps={STEPS} current={0} />
+      <Breadcrumb
+        steps={['Project', 'Personas', 'Summary']}
+        current={0}
+        linkMap={{
+          Project: '/projects',
+          Personas: '/personas',
+          Summary: '/sessions/summary',
+        }}
+      />
       <div className="grid md:grid-cols-2 gap-6">
         <RadioCard
           title="I have a project"

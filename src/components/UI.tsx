@@ -1,6 +1,9 @@
 'use client';
 import * as React from 'react';
 import clsx from 'clsx';
+import Link from 'next/link';
+
+
 
 export function Page({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -13,21 +16,38 @@ export function Page({ title, children }: { title: string; children: React.React
   );
 }
 
+type BreadcrumbProps = {
+  steps: string[];
+  current: number; // 0-based index of current step
+  linkMap?: Record<string, string>; // e.g. { Project:'/projects', Personas:'/personas', Summary:'/sessions/summary' }
+  className?: string;
+};
+
+
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'ghost' | 'subtle';
   size?: 'sm' | 'md';
 };
 
-export function Button({ className, variant = 'primary', size = 'md', ...rest }: ButtonProps) {
+// src/components/UI.tsx (or wherever Button lives)
+export function Button({
+  className,
+  variant = 'primary',
+  size = 'md',
+  type = 'button', // ✅ default to button
+  ...rest
+}: ButtonProps & { type?: 'button' | 'submit' | 'reset' }) {
   const sizes = size === 'sm' ? 'px-3 py-1.5 text-sm' : 'px-4 py-2 text-sm';
   const styles =
-  variant === 'primary'
-    ? 'bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-700/90'
-    : variant === 'subtle'
-    ? 'bg-gray-100 text-gray-900 hover:bg-gray-200'
-    : 'border hover:bg-gray-50';
+    variant === 'primary'
+      ? 'bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-700/90'
+      : variant === 'subtle'
+      ? 'bg-gray-100 text-gray-900 hover:bg-gray-200'
+      : 'border hover:bg-gray-50';
+
   return (
     <button
+      type={type} // ✅ explicitly written
       {...rest}
       className={clsx(
         'inline-flex items-center justify-center rounded-md transition',
@@ -39,27 +59,43 @@ export function Button({ className, variant = 'primary', size = 'md', ...rest }:
   );
 }
 
-export function Breadcrumb({
-  steps,
-  current,
-}: {
-  steps: string[];
-  current: number; // 0-based index, e.g. 0='Project'
-}) {
+export function Breadcrumb({ steps, current, linkMap, className }: BreadcrumbProps) {
   return (
-    <div className="mb-4 flex items-center justify-between">
-      <div className="text-sm text-gray-500">
-        {steps.map((s, i) => (
-          <span key={s}>
-            <span className={i === current ? 'font-semibold text-gray-900' : ''}>{s}</span>
-            {i < steps.length - 1 && <span> &nbsp;→&nbsp; </span>}
-          </span>
-        ))}
-      </div>
-      <div className="text-xs text-gray-500">
-        Step {current + 1} of {steps.length}
-      </div>
-    </div>
+    <nav className={clsx('mb-4 text-sm text-gray-600', className)} aria-label="Breadcrumb">
+      <ol className="flex flex-wrap items-center gap-2">
+        {steps.map((label, i) => {
+          const href = linkMap?.[label];
+          const isPast = i < current;
+          const isCurrent = i === current;
+
+          const item = isPast && href ? (
+            <Link
+              key={label}
+              href={href}
+              className="text-indigo-600 hover:underline"
+            >
+              {label}
+            </Link>
+          ) : (
+            <span
+              key={label}
+              className={clsx(
+                isCurrent ? 'font-medium text-gray-900' : 'text-gray-500'
+              )}
+            >
+              {label}
+            </span>
+          );
+
+          return (
+            <React.Fragment key={label}>
+              {i > 0 && <span className="text-gray-400">→</span>}
+              {item}
+            </React.Fragment>
+          );
+        })}
+      </ol>
+    </nav>
   );
 }
 

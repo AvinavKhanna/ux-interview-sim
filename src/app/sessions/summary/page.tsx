@@ -20,6 +20,7 @@ export default function SummaryPage() {
 
   const description = project?.description?.trim() ?? '';
   const title = deriveTitle(description);
+  const showTitle = title && title !== description;
 
   async function startInterview() {
     if (!selected) return alert('Choose or create a persona first.');
@@ -61,7 +62,7 @@ export default function SummaryPage() {
               <p className="text-sm text-gray-600">Generic Practice</p>
             ) : project ? (
               <>
-                <div className="text-sm text-gray-700 font-medium">{title}</div>
+                {showTitle && <div className="text-sm text-gray-700 font-medium">{title}</div>}
                 {description && <p className="text-sm text-gray-600 mt-1 whitespace-pre-wrap">{description}</p>}
               </>
             ) : (
@@ -86,7 +87,9 @@ export default function SummaryPage() {
                 <div className="text-gray-600">
                   Age {selected.age ?? '—'} • {selected.techFamiliarity ?? '—'} tech • {selected.personality ?? '—'}
                 </div>
-                {selected.occupation && <div className="text-gray-600">Occupation: {selected.occupation}</div>}
+                <div className="text-gray-600">
+                  Occupation: {selected.occupation?.trim() || 'Participant'}
+                </div>
                 {Array.isArray(selected.painPoints) && selected.painPoints.length > 0 && (
                   <ul className="mt-2 list-disc list-inside">
                     {selected.painPoints.map((p, i) => <li key={i}>{p}</li>)}

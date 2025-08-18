@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 
+export const runtime = 'nodejs';
+export const maxDuration = 60; 
 export async function POST(req: Request) {
   const form = await req.formData();
   const audio = form.get("audio") as File;        // .webm from the browser

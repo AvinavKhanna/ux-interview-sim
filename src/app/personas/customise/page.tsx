@@ -26,47 +26,77 @@ export default function CustomisePersonaPage() {
   const [saving, setSaving] = React.useState(false);
 
   async function save() {
-    setSaving(true);
-    try {
-      const payload = {
-        name: name || 'Unnamed',
-        age,
-        occupation: occupation || 'Unknown',
-        techFamiliarity: mapTechFromLevel(techLevel),
-        personality,
-        painPoints: painPoints.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 4),
-        notes,
-      };
+  setSaving(true);
+  try {
+    const nameClean = (name || '').trim();
+    const occClean = (occupation || '').trim();
+    const pp = painPoints.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 4);
 
-      const res = await fetch('/api/personas', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || 'Failed to save persona');
-        return;
-      }
+    const payload = {
+      name: nameClean || 'Unnamed',
+      age: Number.isFinite(age) ? age : 35,
+      occupation: occClean || 'Participant', // better default than "Unknown"
+      techFamiliarity: mapTechFromLevel(techLevel) as TechLevel,
+      personality,
+      painPoints: pp,
+      notes: (notes || '').trim(),
+    };
 
-      const persona: Persona = {
-        id: data.id,
-        name: data.name,
-        age: data.age,
-        occupation: data.occupation,
-        techFamiliarity: data.techFamiliarity,
-        personality: data.personality,
-        painPoints: data.painPoints ?? payload.painPoints,
-        notes: data.notes ?? payload.notes,
-        created_at: data.created_at ?? new Date().toISOString(),
-      };
+    const res = await fetch('/api/personas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
 
-      setSelected(persona);
-      router.push('/sessions/summary');
-    } finally {
-      setSaving(false);
+    let data: any = {};
+    try { data = await res.json(); } catch { data = {}; }
+    if (!res.ok) {
+      alert(data?.error || 'Failed to save persona');
+      return;
     }
+
+    const val = (v: any) => (v === null || v === undefined ? undefined : v);
+
+    // Prefer client occupation if server gave empty or "Unknown"
+    const serverOccRaw = val(data.occupation);
+    const serverOcc =
+      (typeof serverOccRaw === 'string' ? serverOccRaw.trim() : '') || '';
+    const finalOcc =
+      serverOcc && serverOcc.toLowerCase() !== 'unknown'
+        ? serverOcc
+        : payload.occupation;
+
+    // Prefer client tech if server gave invalid value
+    const serverTech = val(data.techFamiliarity);
+    const allowedTech = ['low', 'medium', 'high'];
+    const finalTech = allowedTech.includes(serverTech as string)
+      ? (serverTech as TechLevel)
+      : payload.techFamiliarity;
+
+    const persona: Persona = {
+      id: val(data.id) ?? selected?.id ?? `custom-${Date.now()}`,
+      name: typeof val(data.name) === 'string' && val(data.name).trim()
+        ? val(data.name).trim()
+        : payload.name,
+      age: Number.isFinite(val(data.age)) ? Number(val(data.age)) : payload.age,
+      occupation: finalOcc,                          // <-- your value wins
+      techFamiliarity: finalTech,                    // <-- your slider wins
+      personality: (['friendly','guarded','analytical','impatient'].includes(val(data.personality))
+        ? val(data.personality)
+        : payload.personality) as Personality,
+      painPoints: Array.isArray(val(data.painPoints)) ? val(data.painPoints) : payload.painPoints,
+      notes: typeof val(data.notes) === 'string' ? val(data.notes) : payload.notes,
+      created_at: typeof val(data.created_at) === 'string'
+        ? val(data.created_at)
+        : new Date().toISOString(),
+    };
+
+    setSelected(persona);
+    router.push('/sessions/summary');
+  } finally {
+    setSaving(false);
   }
+}
 
   return (
     <Page title="Customise Persona">
