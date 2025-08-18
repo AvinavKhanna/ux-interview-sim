@@ -1,40 +1,47 @@
+// src/app/api/interview/route.ts
 import OpenAI from "openai";
+import { toFile } from "openai/uploads";
 
-export const runtime = 'nodejs';
-export const maxDuration = 60; 
+export const runtime = "nodejs";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+
 export async function POST(req: Request) {
-  const form = await req.formData();
-  const audio = form.get("audio") as File;        // .webm from the browser
-  const personaPrompt = form.get("personaPrompt") as string; // system prompt
-  const history = JSON.parse(String(form.get("history") || "[]")); // optional last turns
+  try {
+    const form = await req.formData();
+    const blob = form.get("audio") as Blob | File | null;
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+    if (!blob) {
+      return new Response(JSON.stringify({ error: "no audio" }), { status: 400 });
+    }
 
-  // 1) Speech-to-text (Whisper)
-  const stt = await openai.audio.transcriptions.create({
-    file: audio,
-    model: "whisper-1"
-  });
-  const studentText = stt.text || "";
+    // Quietly ignore microscopic clips produced by VAD edges
+    if (blob.size < 12_000) {
+      return new Response(null, { status: 204 });
+    }
 
-  // 2) Persona reply (system prompt + short history + user input)
-  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: personaPrompt },
-    ...history.slice(-8), // last few exchanges keeps context small & cheap
-    { role: "user", content: studentText }
-  ];
+    // Ensure OpenAI receives a proper file with a filename & type
+    const filename =
+      (blob as any)?.name ||
+      `segment.${(blob.type || "audio/webm").includes("webm") ? "webm" : "wav"}`;
 
-  
+    const file = await toFile(blob, filename);
 
-  const chat = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0.8,
-    messages
-  });
-  const personaText = chat.choices[0].message?.content ?? "";
+    const tr = await openai.audio.transcriptions.create({
+      model: "whisper-1",
+      file,
+      // language: "en", // optional
+    });
 
-  return Response.json({ studentText, personaText });
-  
-  
-  
+    const text = (tr as any)?.text?.trim?.() || "";
+    if (!text) return new Response(null, { status: 204 });
+
+    return new Response(JSON.stringify({ text }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err: any) {
+    console.error(err);
+    const msg = err?.error?.message || err?.message || "Transcription failed";
+    return new Response(JSON.stringify({ error: msg }), { status: 500 });
+  }
 }
