@@ -1,47 +1,56 @@
-// src/app/api/interview/route.ts
-import OpenAI from "openai";
-import { toFile } from "openai/uploads";
+import { NextResponse } from 'next/server';
+import OpenAI, { toFile } from 'openai';
+import { createClient } from '@supabase/supabase-js';
+import { STT_MODEL } from '@/lib/models';
 
-export const runtime = "nodejs";
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+export const runtime = 'nodejs'; // ensure File APIs available
 
 export async function POST(req: Request) {
   try {
     const form = await req.formData();
-    const blob = form.get("audio") as Blob | File | null;
+    const file = form.get('audio') as File | null;
+    const sessionId = String(form.get('sessionId') || '');
+    if (!file || !sessionId) return NextResponse.json({ error: 'missing inputs' }, { status: 400 });
 
-    if (!blob) {
-      return new Response(JSON.stringify({ error: "no audio" }), { status: 400 });
-    }
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
 
-    // Quietly ignore microscopic clips produced by VAD edges
-    if (blob.size < 12_000) {
-      return new Response(null, { status: 204 });
-    }
-
-    // Ensure OpenAI receives a proper file with a filename & type
-    const filename =
-      (blob as any)?.name ||
-      `segment.${(blob.type || "audio/webm").includes("webm") ? "webm" : "wav"}`;
-
-    const file = await toFile(blob, filename);
-
-    const tr = await openai.audio.transcriptions.create({
-      model: "whisper-1",
-      file,
-      // language: "en", // optional
+    // 1) STT
+    const transcription = await openai.audio.transcriptions.create({
+      model: STT_MODEL,
+      file: await toFile(file),
     });
+    const transcript = (transcription as any).text?.trim() || '';
+    if (!transcript) return new NextResponse(null, { status: 204 });
 
-    const text = (tr as any)?.text?.trim?.() || "";
-    if (!text) return new Response(null, { status: 204 });
+    // 2) Load persona/system prompt
+    const { data: session } = await supabase.from('sessions').select('id, persona_id').eq('id', sessionId).single();
+    const { data: persona } = await supabase.from('personas').select('system_prompt, voice').eq('id', session?.persona_id).single();
 
-    return new Response(JSON.stringify({ text }), {
-      headers: { "Content-Type": "application/json" },
+    // 3) Persona reply
+    const replyRes = await fetch(new URL('/api/reply', req.url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userText: transcript, personaPrompt: persona?.system_prompt || '' }),
     });
-  } catch (err: any) {
-    console.error(err);
-    const msg = err?.error?.message || err?.message || "Transcription failed";
-    return new Response(JSON.stringify({ error: msg }), { status: 500 });
+    const { replyText } = await replyRes.json();
+
+    // 4) TTS
+    const ttsRes = await fetch(new URL('/api/tts', req.url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: replyText, voice: persona?.voice || 'alloy' }),
+    });
+    const { audioUrl } = await ttsRes.json();
+
+    // 5) Save both turns
+    await supabase.from('turns').insert([
+      { session_id: sessionId, role: 'user', text: transcript },
+      { session_id: sessionId, role: 'persona', text: replyText, audio_url: audioUrl },
+    ]);
+
+    return NextResponse.json({ transcript, replyText, ttsUrl: audioUrl });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message || 'interview failed' }, { status: 500 });
   }
 }

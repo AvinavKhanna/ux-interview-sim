@@ -1,6 +1,7 @@
 export const runtime = 'nodejs';
 import OpenAI from 'openai';
 
+
 export async function POST(req: Request) {
   try {
     const { description } = await req.json();
@@ -30,7 +31,7 @@ Rules:
 Description: """${description}"""`;
 
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5',
       temperature: 0.7,
       messages: [{ role: 'user', content: prompt }],
     });

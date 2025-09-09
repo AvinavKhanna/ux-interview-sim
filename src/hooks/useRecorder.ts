@@ -1,65 +1,46 @@
-"use client";
+import { useEffect, useRef, useState } from 'react';
 
-import { useEffect, useRef, useState } from "react";
-
-type RecorderState = "idle" | "recording" | "stopped";
+type Status = 'idle' | 'recording' | 'processing' | 'error';
 
 export function useRecorder() {
+  const [status, setStatus] = useState<Status>('idle');
+  const [error, setError] = useState<string | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
-  const [state, setState] = useState<RecorderState>("idle");
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (mediaRef.current && mediaRef.current.state !== "inactive") {
-        mediaRef.current.stop();
-      }
-    };
-  }, []);
 
   async function start() {
     setError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream, { mimeType: "audio/webm" });
-      chunksRef.current = [];
-      rec.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      rec.start();
-      mediaRef.current = rec;
-      setState("recording");
-    } catch (e: any) {
-      setError(e?.message ?? "Microphone permission denied");
-      setState("idle");
-    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const preferred = 'audio/webm;codecs=opus';
+    const fallback = 'audio/mp4';
+    const mimeType = MediaRecorder.isTypeSupported(preferred) ? preferred : fallback;
+
+    const mr = new MediaRecorder(stream, { mimeType });
+    chunksRef.current = [];
+    mr.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+    mr.onerror = (e) => setError((e as any).error?.message || 'Recorder error');
+    mr.onstop = () => stream.getTracks().forEach(t => t.stop());
+
+    mediaRef.current = mr;
+    mr.start(); // push-to-talk style; keep it simple first
+    setStatus('recording');
   }
 
   async function stop(): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      const rec = mediaRef.current;
-      if (!rec || rec.state === "inactive") {
-        resolve(null);
-        return;
-      }
-      rec.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        // stop mic tracks
-        rec.stream.getTracks().forEach((t) => t.stop());
-        mediaRef.current = null;
-        setState("stopped");
+    const mr = mediaRef.current;
+    if (!mr) return null;
+    setStatus('processing');
+    const blobPromise = new Promise<Blob>((resolve) => {
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType });
         resolve(blob);
       };
-      rec.stop();
     });
+    mr.stop();
+    const blob = await blobPromise;
+    setStatus('idle');
+    return blob;
   }
 
-  function reset() {
-    chunksRef.current = [];
-    setState("idle");
-    setError(null);
-  }
-
-  return { state, error, start, stop, reset };
+  return { start, stop, status, error };
 }

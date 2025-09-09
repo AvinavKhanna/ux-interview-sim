@@ -52,7 +52,7 @@ Student question: "${sr}"
 Persona previous reply: "${pr}"`;
 
     const res = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5",
       temperature: 0,
       messages: [{ role: "user", content: prompt }],
     });
