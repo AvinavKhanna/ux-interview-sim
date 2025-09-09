@@ -1,36 +1,42 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { CHAT_MODEL } from '@/lib/models';
+
+export const runtime = 'nodejs';
 
 export async function POST(req: Request) {
   try {
-    const { userText, personaPrompt, sessionContext } = await req.json();
+    const { userText = '', personaPrompt = '', sessionContext = '' } = await req.json();
+    if (!userText.trim()) {
+      return NextResponse.json({ error: 'userText is required' }, { status: 400 });
+    }
+
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-    const system = `${personaPrompt}
-- Stay in character. Be concise and natural.
-- Answer as the user you are role-playing, not as an assistant.
-- If the question is unclear, ask a brief clarifying question.`;
-
-    // ✅ Build messages with an explicit type (no spread/ternary shenanigans)
-    const messages: ChatCompletionMessageParam[] = [
-      { role: 'system', content: system },
-    ];
-    if (sessionContext) {
-      messages.push({ role: 'system', content: `Context: ${sessionContext}` });
-    }
-    messages.push({ role: 'user', content: userText });
+    const system = [
+      personaPrompt.trim(),
+      'You are the interviewee. Stay strictly in character.',
+      'Be concise and natural. One or two sentences unless explicitly asked to elaborate.',
+      sessionContext ? `Context: ${sessionContext}` : '',
+    ].filter(Boolean).join('\n');
 
     const completion = await openai.chat.completions.create({
-      model: CHAT_MODEL,
-      temperature: 0.7,
-      messages,
+      model: CHAT_MODEL || 'gpt-4o-mini', // fallback to a known-good model
+      // 🚫 No temperature here (some models only allow the default=1)
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: userText },
+      ],
     });
 
-    const replyText = completion.choices[0]?.message?.content?.trim() || '…';
+    const replyText = completion.choices?.[0]?.message?.content?.trim() || '';
+    if (!replyText) {
+      return NextResponse.json({ error: 'Empty reply from model' }, { status: 502 });
+    }
+
     return NextResponse.json({ replyText });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || 'reply failed' }, { status: 500 });
+    console.error('/api/reply error:', e?.response?.data || e?.message || e);
+    return NextResponse.json({ error: e?.message || 'reply failed' }, { status: 500 });
   }
 }

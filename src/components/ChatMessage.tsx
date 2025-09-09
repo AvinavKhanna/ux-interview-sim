@@ -1,16 +1,28 @@
-import clsx from 'clsx';
+'use client';
+import React from 'react';
 
 export function ChatMessage({
-  role, text, audioUrl,
-}: { role: 'user' | 'persona'; text: string; audioUrl?: string }) {
+  role,
+  text,
+  audioUrl,
+}: { role: 'user' | 'persona'; text?: string; audioUrl?: string }) {
+  const isUser = role === 'user';
+  const bubble =
+    isUser
+      ? 'bg-blue-600 text-white'
+      : 'bg-gray-100 text-gray-900';
+
   return (
-    <div className={clsx('flex w-full mb-3', role === 'user' ? 'justify-end' : 'justify-start')}>
-      <div className={clsx(
-        'max-w-[75%] rounded-2xl px-4 py-3 shadow',
-        role === 'user' ? 'bg-blue-600 text-white rounded-br-sm' : 'bg-gray-100 rounded-bl-sm'
-      )}>
-        <p className="whitespace-pre-wrap">{text}</p>
-        {audioUrl ? <audio className="mt-2 w-full" src={audioUrl} controls /> : null}
+    <div className={`w-full flex ${isUser ? 'justify-end' : 'justify-start'} my-2`}>
+      <div className={`max-w-[75%] rounded-2xl px-4 py-3 shadow ${bubble}`}>
+        {text && text.trim() ? (
+          <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+        ) : (
+          <p className="italic text-gray-500">{isUser ? '(no transcript)' : '(no reply)'}</p>
+        )}
+        {audioUrl ? (
+          <audio className="mt-2 w-full" src={audioUrl} controls preload="none" />
+        ) : null}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseServer } from '@/lib/supabase';
 
+
 export async function GET() {
   const sb = supabaseServer();
   const { data, error } = await sb.from('sessions').select('*').order('started_at', { ascending: false });
