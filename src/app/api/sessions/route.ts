@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+﻿import { NextResponse } from 'next/server';
 import { supabaseServer } from '@/lib/supabase';
 
 
@@ -24,27 +24,29 @@ export async function POST(req: Request) {
     const name = typeof p?.name === 'string' && p.name.trim() ? p.name.trim() : 'Unnamed';
     const age = Number.isFinite(p?.age) ? Number(p.age) : 35;
     const occupation = typeof p?.occupation === 'string' && p.occupation.trim() ? p.occupation.trim() : 'Unknown';
-    const techfamiliarity = typeof p?.techFamiliarity === 'string' ? p.techFamiliarity : 'medium';
+    const techfamiliarity = (() => { const raw = typeof p?.techFamiliarity === 'string' ? p.techFamiliarity.toLowerCase().trim() : ''; if (raw.includes('low') || raw.includes('novice') || raw.includes('beginner')) return 'low'; if (raw.includes('high') || raw.includes('advanced') || raw.includes('expert')) return 'high'; return 'medium'; })();
     const painpoints: string[] = Array.isArray(p?.painPoints) ? p.painPoints.slice(0, 8).map(String) : [];
-    const personality = typeof p?.personality === 'string' ? p.personality : null;
+    const personality = (() => { const v = (typeof p?.personality === 'string' ? String(p.personality) : '').toLowerCase().trim(); return v === 'warm' || v === 'neutral' || v === 'reserved' ? v : 'neutral'; })();
     const demographics = (p?.demographics && typeof p.demographics === 'object') ? p.demographics : {};
 
-    const ins = await sb.from('personas')
-      .insert({
-        name,
-        age,
-        occupation,
-        techfamiliarity,
-        painpoints,
-        personality,
-        demographics,
-        notes: typeof p?.notes === 'string' ? p.notes : null,
-        goals: Array.isArray(p?.goals) ? p.goals.map(String) : null,
-        frustrations: Array.isArray(p?.frustrations) ? p.frustrations.map(String) : null,
-      })
-      .select('id')
-      .single();
+    const baseInsert = {
+      name,
+      age,
+      occupation,
+      techfamiliarity,
+      painpoints,
+      demographics,
+      notes: typeof p?.notes === 'string' ? p.notes : null,
+      goals: Array.isArray(p?.goals) ? p.goals.map(String) : null,
+      frustrations: Array.isArray(p?.frustrations) ? p.frustrations.map(String) : null,
+    } as Record<string, unknown>;
+    const withPersonality = { ...baseInsert, personality };
 
+    let ins = await sb.from('personas').insert(withPersonality).select('id').single();
+    if (ins.error && String(ins.error.message || '').toLowerCase().includes('personality')) {
+      // Retry without personality to satisfy strict DB checks
+      ins = await sb.from('personas').insert(baseInsert).select('id').single();
+    }
     if (ins.error) {
       return NextResponse.json({ error: ins.error.message }, { status: 500 });
     }
@@ -58,3 +60,6 @@ export async function POST(req: Request) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }
+
+
+

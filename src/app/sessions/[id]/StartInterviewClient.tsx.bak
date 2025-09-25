@@ -1,0 +1,1300 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Card, Button } from '@/components/UI';
+import { supabaseBrowser } from '@/lib/supabase';
+import {
+  VoiceClient,
+  createSocketConfig,
+  base64ToBlob,
+  arrayBufferToBlob,
+  getSupportedMimeType,
+  type AudioMessage,
+  type JSONMessage,
+  type AssistantTranscriptMessage,
+  type UserTranscriptMessage,
+} from '@humeai/voice';
+import type { CoachCue } from '@/app/api/coach/route';
+import { buildPrompt, deriveInitialKnobs } from '@/lib/prompt/personaPrompt';
+import { saveTurn, appendCoaching } from '@/lib/analytics/store';
+
+type RawKnobPayload = {
+  guardedness?: number;
+  hesitation?: number;
+  talkativeness?: number;
+  openness?: number;
+  speaking_rate?: number;
+  disfluency?: number;
+  warmth?: number;
+};
+
+type Knobs = {
+  guardedness: number;
+  hesitation: number;
+  talkativeness: number;
+  openness: number;
+};
+
+type EmotionSnapshot = {
+  interest?: number;
+  confusion?: number;
+  calmness?: number;
+  interrupted?: boolean;
+};
+
+type PersonaSummary = {
+  name?: string | null;
+  age?: number | null;
+  occupation?: string | null;
+  techfamiliarity?: string | null;
+  personality?: unknown;
+  goals?: unknown;
+  frustrations?: unknown;
+  painpoints?: unknown;
+  notes?: unknown;
+  gender?: string | null;
+  demographics?: Record<string, unknown> | null;
+};
+
+type ProjectSummary = {
+  title?: string | null;
+  description?: string | null;
+} | null;
+
+type TokenPayload = {
+  accessToken: string;
+  tokenType?: string;
+  expiresIn?: number;
+  access_token?: string;
+  token_type?: string;
+  expires_in?: number;
+  personaPrompt?: string;
+  personaName?: string;
+  configId?: string;
+  persona?: PersonaSummary | null;
+  project?: ProjectSummary;
+  knobs?: RawKnobPayload | null;
+  behaviorHints?: string[];
+};
+
+type StartInterviewClientProps = {
+  sessionId: string;
+  persona?: PersonaSummary | null;
+  project?: ProjectSummary | null;
+};
+
+type VoiceClientInstance = ReturnType<typeof VoiceClient.create>;
+
+type EmotionScores = Record<string, number>;
+
+type Turn = {
+  id: string;
+  role: 'user' | 'persona';
+  text: string;
+  at: string;
+  scores?: EmotionScores;
+};
+
+const SCORE_COLORS = ['bg-sky-500', 'bg-amber-500', 'bg-emerald-500', 'bg-violet-500'] as const;
+
+const coerceRole = (raw: unknown): 'user' | 'persona' => {
+  const value = String(raw ?? '').toLowerCase();
+  if (value.includes('assistant') || value.includes('persona') || value.includes('agent')) return 'persona';
+  return 'user';
+};
+
+const extractTranscriptTurns = (payload: unknown): Array<{ role: 'user' | 'persona'; text: string }> => {
+  const result: Array<{ role: 'user' | 'persona'; text: string }> = [];
+  const push = (role: 'user' | 'persona', text: unknown) => {
+    const content = typeof text === 'string' ? text.trim() : String(text ?? '').trim();
+    if (content) result.push({ role, text: content });
+  };
+
+  const visit = (node: unknown) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node !== 'object') return;
+    const obj = node as Record<string, unknown>;
+
+    if (obj.message && typeof obj.message === 'object') {
+      const message = obj.message as Record<string, unknown>;
+      const role = coerceRole(message.role ?? obj.role ?? obj.speaker);
+      const text = message.content ?? message.text ?? obj.text ?? obj.content;
+      if (text) push(role, text);
+      if (message.segments) visit(message.segments);
+    } else if (obj.text || obj.content) {
+      const role = coerceRole(obj.role ?? obj.speaker);
+      push(role, obj.text ?? obj.content);
+    }
+
+    if (obj.entries) visit(obj.entries);
+    if (obj.messages) visit(obj.messages);
+    if (obj.results) visit(obj.results);
+    if (obj.alternatives) visit(obj.alternatives);
+    if (obj.transcripts) visit(obj.transcripts);
+    if (obj.transcript) visit(obj.transcript);
+  };
+
+  visit(payload);
+  return result;
+};
+
+const toStringList = (value: unknown): string[] => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(String).map((entry) => entry.trim()).filter(Boolean);
+  if (typeof value === 'string') {
+    return value
+      .split(/[;,\n]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return [];
+};
+
+const normalizeTechLevel = (value: unknown): 'low' | 'medium' | 'high' => {
+  const textValue = String(value ?? '').toLowerCase();
+  if (textValue.includes('low') || textValue.includes('novice') || textValue.includes('beginner')) return 'low';
+  if (textValue.includes('high') || textValue.includes('advanced') || textValue.includes('expert')) return 'high';
+  if (textValue.includes('medium') || textValue.includes('moderate') || textValue.includes('intermediate')) return 'medium';
+  return 'medium';
+};
+
+const normalizePersonalityTone = (value: unknown): 'warm' | 'neutral' | 'reserved' => {
+  const derive = (): string => {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.map(String).join(' ');
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      const fields = ['personality', 'style', 'tone', 'mood', 'summary'];
+      for (const field of fields) {
+        if (typeof record[field] === 'string') return record[field] as string;
+      }
+    }
+    return '';
+  };
+  const lowered = derive().toLowerCase();
+  if (lowered.includes('warm') || lowered.includes('friendly') || lowered.includes('open')) return 'warm';
+  if (lowered.includes('reserved') || lowered.includes('quiet') || lowered.includes('introvert')) return 'reserved';
+  return 'neutral';
+};
+
+const inferGenderHint = (persona: PersonaSummary | null | undefined): 'male' | 'female' | undefined => {
+  const fromPersona = typeof persona?.gender === 'string' && persona.gender.trim() ? persona.gender : undefined;
+  const fromDemo = (() => {
+    if (!persona?.demographics || typeof persona.demographics !== 'object') return undefined;
+    const record = persona.demographics as Record<string, unknown>;
+    const raw = record.gender;
+    return typeof raw === 'string' && raw.trim() ? raw : undefined;
+  })();
+  const raw = fromPersona ?? fromDemo;
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.startsWith('f')) return 'female';
+  if (normalized.startsWith('m')) return 'male';
+  return undefined;
+};
+
+const composeProjectContext = (project: ProjectSummary | null | undefined): string => {
+  if (!project) return 'General UX research interview.';
+  const parts: string[] = [];
+  if (typeof project.title === 'string' && project.title.trim()) parts.push(project.title.trim());
+  if (typeof project.description === 'string' && project.description.trim()) parts.push(project.description.trim());
+  return parts.join(' — ') || 'General UX research interview.';
+};
+
+const buildPersonaPromptPayload = (persona: PersonaSummary | null, project: ProjectSummary | null) => {
+  const age = typeof persona?.age === 'number' && Number.isFinite(persona.age) ? persona.age : 35;
+  const traits = new Set<string>();
+  if (typeof persona?.occupation === 'string' && persona.occupation.trim()) traits.add(persona.occupation.trim());
+  toStringList(persona?.goals).forEach((entry) => traits.add(entry));
+  toStringList(persona?.frustrations).forEach((entry) => traits.add(entry));
+  toStringList(persona?.painpoints).forEach((entry) => traits.add(entry));
+  if (typeof persona?.notes === 'string' && persona.notes.trim()) traits.add(persona.notes.trim());
+
+  const personaKnobs = deriveInitialKnobs({
+    age,
+    traits: Array.from(traits),
+    techFamiliarity: normalizeTechLevel(persona?.techfamiliarity),
+    personality: normalizePersonalityTone(persona?.personality),
+    genderHint: inferGenderHint(persona),
+  });
+
+  const prompt = buildPrompt({ projectContext: composeProjectContext(project), persona: personaKnobs });
+  return {
+    personaKnobs,
+    systemPrompt: prompt.systemPrompt,
+    behaviorHints: prompt.behaviorHints,
+  };
+};
+
+const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value));
+
+const QUALITY_COLORS: Record<CoachCue['quality'], string> = {
+  great: 'bg-emerald-100 text-emerald-800',
+  good: 'bg-sky-100 text-sky-800',
+  neutral: 'bg-gray-100 text-gray-700',
+  risky: 'bg-amber-100 text-amber-800',
+  problem: 'bg-rose-100 text-rose-800',
+};
+
+export default function StartInterviewClient({ sessionId, persona = null, project = null }: StartInterviewClientProps) {
+  const [token, setToken] = useState<TokenPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [autoStart, setAutoStart] = useState(false);
+  const [personaState, setPersonaState] = useState<PersonaSummary | null>(persona ?? null);
+  const [projectState, setProjectState] = useState<ProjectSummary>(project ?? null);
+
+  const requestTokenAndStart = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/hume/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+        cache: 'no-store',
+      });
+      const raw = (await response.json().catch(() => ({}))) as Partial<TokenPayload> & { [key: string]: unknown };
+      if (!response.ok) {
+        alert(typeof raw.error === 'string' ? (raw.error as string) : 'Failed to get token');
+        return;
+      }
+      if (raw.persona) setPersonaState(raw.persona as PersonaSummary);
+      if ('project' in raw) setProjectState((raw.project as ProjectSummary) ?? null);
+      const accessTokenValue =
+        typeof raw.accessToken === 'string'
+          ? (raw.accessToken as string)
+          : typeof raw.access_token === 'string'
+          ? (raw.access_token as string)
+          : '';
+      if (!accessTokenValue) {
+        alert('Token response missing access token');
+        return;
+      }
+      const normalized: TokenPayload = {
+        ...(raw as TokenPayload),
+        accessToken: accessTokenValue,
+        tokenType:
+          typeof raw.tokenType === 'string'
+            ? (raw.tokenType as string)
+            : typeof raw.token_type === 'string'
+            ? (raw.token_type as string)
+            : undefined,
+        expiresIn:
+          typeof raw.expiresIn === 'number'
+            ? (raw.expiresIn as number)
+            : typeof raw.expires_in === 'number'
+            ? (raw.expires_in as number)
+            : undefined,
+        behaviorHints: Array.isArray(raw.behaviorHints)
+          ? (raw.behaviorHints as unknown[]).filter((value): value is string => typeof value === 'string')
+          : undefined,
+        knobs: (raw.knobs as RawKnobPayload | null | undefined) ?? null,
+      };
+      setToken(normalized);
+      setAutoStart(true);
+    } catch (err) {
+      console.error('[hume:token]', err);
+      alert('Failed to contact token endpoint');
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
+
+  if (!token) {
+    return (
+      <Card className="p-6" aria-busy={loading}>
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-600">Start your real-time interview with Hume EVI.</span>
+          <Button onClick={requestTokenAndStart} disabled={loading}>
+            {loading ? 'Starting...' : 'Start Interview'}
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <LiveInterview
+      accessToken={token.accessToken}
+      personaName={token.personaName ?? personaState?.name ?? 'Participant'}
+      configId={token.configId}
+      sessionId={sessionId}
+      persona={token.persona ?? personaState}
+      project={token.project ?? projectState}
+      initialKnobs={token.knobs}
+      autoStart={autoStart}
+      onAutoStartConsumed={() => setAutoStart(false)}
+    />
+  );
+}
+
+interface LiveInterviewProps {
+  accessToken: string;
+  personaName: string;
+  configId?: string;
+  sessionId: string;
+  persona: PersonaSummary | null;
+  project: ProjectSummary | null;
+  initialKnobs?: RawKnobPayload | null;
+  autoStart: boolean;
+  onAutoStartConsumed: () => void;
+}
+
+function LiveInterview({
+  accessToken,
+  personaName,
+  configId,
+  sessionId,
+  persona,
+  project,
+  initialKnobs,
+  autoStart,
+  onAutoStartConsumed,
+}: LiveInterviewProps) {
+  const clientRef = useRef<VoiceClientInstance | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderStartedRef = useRef(false);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const localAnalyserRef = useRef<AnalyserNode | null>(null);
+  const remoteAnalyserRef = useRef<AnalyserNode | null>(null);
+  const remoteSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const playQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const turnsRef = useRef<Turn[]>([]);
+  const personaRef = useRef<PersonaSummary | null>(persona ?? null);
+  const projectRef = useRef<ProjectSummary>(project ?? null);
+  const userHasSpokenRef = useRef(false);
+  const pendingAssistantAudioRef = useRef<Blob[]>([]);
+  const pendingAssistantMessagesRef = useRef<AssistantTranscriptMessage[]>([]);
+  const userTalkingRef = useRef(false);
+  const resumePlaybackTimerRef = useRef<number | null>(null);
+  const refreshPersonaPrompt = useCallback(() => buildPersonaPromptPayload(personaRef.current, projectRef.current), []);
+  const lastHumeRef = useRef<EmotionSnapshot | null>(null);
+  const persistedTurnIdsRef = useRef<Set<string>>(new Set());
+  const computeBaselineKnobs = useCallback((): Knobs => {
+    const source = (initialKnobs as RawKnobPayload | null) ?? {};
+
+    const read = (value: unknown): number | undefined =>
+      typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+    const warmth = read(source.warmth) ?? 0.55;
+    const disfluency = read(source.disfluency ?? source.hesitation) ?? 0.2;
+    const speakingRate = read(source.speaking_rate ?? source.talkativeness) ?? 0.96;
+
+    const guardedness = clamp(read(source.guardedness) ?? (0.45 + (1 - warmth) * 0.3 + disfluency * 0.2));
+    const hesitation = clamp(read(source.hesitation) ?? (0.3 + disfluency * 0.5));
+    const talkativeness = clamp(read(source.talkativeness) ?? (0.55 + (speakingRate - 0.96) * 0.6 - disfluency * 0.2));
+    const openness = clamp(read(source.openness) ?? (0.5 + warmth * 0.3 - disfluency * 0.25));
+
+    return { guardedness, hesitation, talkativeness, openness };
+  }, [initialKnobs]);
+  const knobsRef = useRef<Knobs>(computeBaselineKnobs());
+  const cueTimerRef = useRef<number | null>(null);
+
+  const [knobs, setKnobs] = useState<Knobs>(knobsRef.current);
+  const [connected, setConnected] = useState(false);
+  const [conn, setConn] = useState<'idle' | 'connecting' | 'handshaking' | 'connected' | 'closed'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [text, setText] = useState('');
+  const [micLevel, setMicLevel] = useState(0);
+  const [remoteLevel, setRemoteLevel] = useState(0);
+  const [coachOn, setCoachOn] = useState(true);
+  const [cue, setCue] = useState<CoachCue | null>(null);
+
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+
+  useEffect(() => {
+    knobsRef.current = knobs;
+  }, [knobs]);
+
+  useEffect(() => {
+    const audioEl = audioRef.current;
+    if (!audioEl) return;
+    const threshold = 0.18;
+    if (micLevel > threshold) {
+      if (!userHasSpokenRef.current) {
+        userHasSpokenRef.current = true;
+        flushPendingAssistantContent();
+      }
+      if (!userTalkingRef.current) {
+        userTalkingRef.current = true;
+      }
+      if (!audioEl.paused) {
+        audioEl.pause();
+      }
+      if (resumePlaybackTimerRef.current) {
+        window.clearTimeout(resumePlaybackTimerRef.current);
+        resumePlaybackTimerRef.current = null;
+      }
+    } else if (userTalkingRef.current) {
+      if (resumePlaybackTimerRef.current) window.clearTimeout(resumePlaybackTimerRef.current);
+      resumePlaybackTimerRef.current = window.setTimeout(() => {
+        userTalkingRef.current = false;
+        if (audioEl.paused && !audioEl.ended) {
+          audioEl.play().catch(() => undefined);
+        }
+      }, 400);
+    }
+  }, [flushPendingAssistantContent, micLevel]);
+
+  useEffect(() => {
+    personaRef.current = persona ?? null;
+    refreshPersonaPrompt();
+    const baseline = computeBaselineKnobs();
+    knobsRef.current = baseline;
+    setKnobs(baseline);
+  }, [persona, computeBaselineKnobs, refreshPersonaPrompt]);
+
+  useEffect(() => {
+    refreshPersonaPrompt();
+  }, [refreshPersonaPrompt]);
+
+  useEffect(() => {
+    projectRef.current = project ?? null;
+    refreshPersonaPrompt();
+  }, [project, refreshPersonaPrompt]);
+
+  useEffect(() => {
+    return () => {
+      if (cueTimerRef.current) window.clearTimeout(cueTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!coachOn) {
+      setCue(null);
+      if (cueTimerRef.current) window.clearTimeout(cueTimerRef.current);
+    }
+  }, [coachOn]);
+
+  useEffect(() => {
+    const el = document.getElementById('live-interview-chat');
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: turns.length > 1 ? 'smooth' : 'auto' });
+  }, [turns]);
+
+  const ensureLastHume = useCallback((): EmotionSnapshot => {
+    if (!lastHumeRef.current) lastHumeRef.current = {};
+    return lastHumeRef.current;
+  }, []);
+
+  const rms = useCallback((data: Uint8Array) => {
+    if (!data.length) return 0;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 1) {
+      const value = (data[i] - 128) / 128;
+      sum += value * value;
+    }
+    return Math.sqrt(sum / data.length);
+  }, []);
+
+  const stopMeters = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    localAnalyserRef.current?.disconnect();
+    remoteAnalyserRef.current?.disconnect();
+    localAnalyserRef.current = null;
+    remoteAnalyserRef.current = null;
+    setMicLevel(0);
+    setRemoteLevel(0);
+  }, []);
+
+  const ensureAudioContext = useCallback(async () => {
+    if (typeof window === 'undefined') return null;
+    const win = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+    const AC = win.AudioContext ?? win.webkitAudioContext;
+    if (!AC) return null;
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AC();
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+      try {
+        await audioCtxRef.current.resume();
+      } catch (resumeErr) {
+        console.warn('[hume:audioCtx:resume]', resumeErr);
+      }
+    }
+    return audioCtxRef.current;
+  }, []);
+
+  const ensureRemoteAnalyser = useCallback(async () => {
+    const ctx = await ensureAudioContext();
+    if (!ctx || !audioRef.current) return;
+    if (!remoteSourceRef.current) {
+      remoteSourceRef.current = ctx.createMediaElementSource(audioRef.current);
+      remoteSourceRef.current.connect(ctx.destination);
+    }
+    if (!remoteAnalyserRef.current) {
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      remoteSourceRef.current.connect(analyser);
+      remoteAnalyserRef.current = analyser;
+    }
+  }, [ensureAudioContext]);
+
+  const startMeters = useCallback(async (local?: MediaStream) => {
+    try {
+      const ctx = await ensureAudioContext();
+      if (!ctx) return;
+      if (local) {
+        const source = ctx.createMediaStreamSource(local);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        localAnalyserRef.current = analyser;
+      }
+      await ensureRemoteAnalyser();
+      let localBuffer: Uint8Array | null = null;
+      let remoteBuffer: Uint8Array | null = null;
+      const tick = () => {
+        if (localAnalyserRef.current) {
+          localBuffer = localBuffer ?? new Uint8Array(localAnalyserRef.current.frequencyBinCount);
+          localAnalyserRef.current.getByteTimeDomainData(localBuffer);
+          setMicLevel(rms(localBuffer));
+        } else {
+          localBuffer = null;
+          setMicLevel(0);
+        }
+        if (remoteAnalyserRef.current) {
+          remoteBuffer = remoteBuffer ?? new Uint8Array(remoteAnalyserRef.current.frequencyBinCount);
+          remoteAnalyserRef.current.getByteTimeDomainData(remoteBuffer);
+          setRemoteLevel(rms(remoteBuffer));
+        } else {
+          remoteBuffer = null;
+          setRemoteLevel(0);
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      if (!rafRef.current) {
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    } catch (err) {
+      console.warn('[hume:meters]', err);
+    }
+  }, [ensureAudioContext, ensureRemoteAnalyser, rms]);
+
+  const playAssistantAudio = useCallback(async (blob: Blob) => {
+    if (!audioRef.current) {
+      pendingAssistantAudioRef.current.unshift(blob);
+      return Promise.resolve();
+    }
+    await ensureRemoteAnalyser();
+    playQueueRef.current = playQueueRef.current
+      .then(
+        () =>
+          new Promise<void>((resolve) => {
+            const audioEl = audioRef.current!;
+            const url = URL.createObjectURL(blob);
+            const cleanup = () => {
+              audioEl.removeEventListener('ended', onDone);
+              audioEl.removeEventListener('error', onDone);
+              URL.revokeObjectURL(url);
+              resolve();
+            };
+            const onDone = () => cleanup();
+            audioEl.src = url;
+            audioEl.play().catch((playErr) => {
+              console.warn('[hume:audio:play]', playErr);
+              cleanup();
+            });
+            audioEl.addEventListener('ended', onDone, { once: true });
+            audioEl.addEventListener('error', onDone, { once: true });
+          })
+      )
+      .catch((queueErr) => console.warn('[hume:audio:queue]', queueErr));
+    return playQueueRef.current;
+  }, [ensureRemoteAnalyser]);
+
+  const enqueueAudio = useCallback(
+    (blob: Blob | null) => {
+      if (!blob) return Promise.resolve();
+      if (!userHasSpokenRef.current) {
+        pendingAssistantAudioRef.current.push(blob);
+        return Promise.resolve();
+      }
+      return playAssistantAudio(blob);
+    },
+    [playAssistantAudio]
+  );
+
+  const stopRecorder = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    try {
+      if (recorder.state !== 'inactive') recorder.stop();
+    } catch (err) {
+      console.warn('[hume:recorder:stop]', err);
+    }
+    recorderStartedRef.current = false;
+  }, []);
+
+  const releaseMedia = useCallback(() => {
+    stopRecorder();
+    try {
+      localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    } catch (err) {
+      console.warn('[hume:stream:stop]', err);
+    }
+    localStreamRef.current = null;
+    remoteSourceRef.current?.disconnect();
+    remoteSourceRef.current = null;
+    remoteAnalyserRef.current = null;
+    stopMeters();
+    playQueueRef.current = Promise.resolve();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+    }
+    pendingAssistantAudioRef.current = [];
+    pendingAssistantMessagesRef.current = [];
+    userHasSpokenRef.current = false;
+    userTalkingRef.current = false;
+    if (resumePlaybackTimerRef.current) {
+      window.clearTimeout(resumePlaybackTimerRef.current);
+      resumePlaybackTimerRef.current = null;
+    }
+  }, [stopMeters, stopRecorder]);
+
+  const disconnectClient = useCallback(() => {
+    if (!clientRef.current) return;
+    try {
+      clientRef.current.disconnect();
+    } catch (err) {
+      console.warn('[hume:client:disconnect]', err);
+    }
+    clientRef.current = null;
+  }, []);
+
+  const recordTurn = useCallback(
+    (turn: Turn, emotionsSnapshot?: EmotionSnapshot | null) => {
+      setTurns((prev) => {
+        const idx = prev.findIndex((t) => t.id === turn.id);
+        const next = idx >= 0 ? [...prev.slice(0, idx), { ...prev[idx], ...turn }, ...prev.slice(idx + 1)] : [...prev, turn];
+        turnsRef.current = next;
+        return next;
+      });
+      const shouldPersist = turn.text.trim().length > 0 && !persistedTurnIdsRef.current.has(turn.id);
+      if (shouldPersist) {
+        persistedTurnIdsRef.current.add(turn.id);
+        void saveTurn({ sessionId, role: turn.role, text: turn.text, emotions: emotionsSnapshot ?? null }).catch((err) =>
+          console.warn('[analytics:saveTurn]', err)
+        );
+      }
+    },
+    [sessionId]
+  );
+
+  const updateEmotionsFromScores = useCallback(
+    (scores?: EmotionScores) => {
+      if (!scores) return;
+      const state = ensureLastHume();
+      for (const [key, value] of Object.entries(scores)) {
+        if (!Number.isFinite(value)) continue;
+        const lower = key.toLowerCase();
+        if (lower.includes('confusion')) state.confusion = value;
+        if (lower.includes('calm')) state.calmness = value;
+        if (lower.includes('interest')) state.interest = value;
+      }
+      lastHumeRef.current = state;
+    },
+    [ensureLastHume]
+  );
+
+  const startRecorder = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state === 'recording' || recorderStartedRef.current) return;
+    try {
+      recorder.start(250);
+      recorderStartedRef.current = true;
+    } catch (err) {
+      console.warn('[hume:recorder:start]', err);
+    }
+  }, []);
+
+  const sendPromptUpdate = useCallback(async () => {
+    const { systemPrompt } = refreshPersonaPrompt();
+    try {
+      const maybe = clientRef.current?.sendSessionSettings?.({ systemPrompt, customSessionId: sessionId });
+      if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
+        await (maybe as Promise<unknown>);
+      }
+    } catch (err) {
+      console.warn('[hume:settings:update]', err);
+    }
+  }, [refreshPersonaPrompt, sessionId]);
+
+  const sendPromptUpdateRef = useRef<() => Promise<void> | void>(() => undefined);
+  useEffect(() => {
+    sendPromptUpdateRef.current = () => sendPromptUpdate();
+  }, [sendPromptUpdate]);
+
+  const requestCoachCue = useCallback(
+    async (recentTurns: Turn[]) => {
+      if (!coachOn) return;
+      try {
+        const res = await fetch('/api/coach', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId,
+            lastTurns: recentTurns.map((turn) => ({ role: turn.role, text: turn.text })),
+            persona: {
+              name: personaRef.current?.name ?? personaName,
+              age: personaRef.current?.age ?? undefined,
+              occupation: personaRef.current?.occupation ?? undefined,
+            },
+            hume: lastHumeRef.current ?? undefined,
+          }),
+        });
+        if (!res.ok) return;
+        const cueJson = (await res.json()) as CoachCue;
+        setCue(cueJson);
+        if (cueTimerRef.current) window.clearTimeout(cueTimerRef.current);
+        cueTimerRef.current = window.setTimeout(() => setCue(null), 8000);
+        void appendCoaching({ sessionId, cue: cueJson }).catch((err) => console.warn('[analytics:coach]', err));
+      } catch (err) {
+        console.warn('[coach:fetch]', err);
+      }
+    },
+    [coachOn, personaName, sessionId]
+  );
+
+  const handleUserTurn = useCallback(
+    async (userText: string) => {
+      const trimmed = userText.trim();
+      if (!trimmed) return;
+
+      if (!userHasSpokenRef.current) {
+        userHasSpokenRef.current = true;
+        flushPendingAssistantContent();
+      }
+
+      if (cueTimerRef.current) window.clearTimeout(cueTimerRef.current);
+      setCue(null);
+
+      const emo = ensureLastHume();
+      const openScore = /(^how|^what|^tell me|^walk me)/i.test(trimmed) ? 0.8 : 0.4;
+      const leadScore = /(should|must|obviously|isn['’]t it)/i.test(trimmed) ? 0.7 : 0.3;
+
+      setKnobs((prev) => {
+        const next: Knobs = {
+          guardedness: clamp(0.3 + 0.4 * leadScore + 0.2 * (1 - (emo.calmness ?? 0)) + (emo.interrupted ? 0.2 : 0)),
+          talkativeness: clamp(prev.talkativeness + 0.15 * (openScore - 0.5)),
+          hesitation: clamp(0.2 + 0.4 * (emo.confusion ?? 0) + (emo.interrupted ? 0.15 : 0)),
+          openness: clamp(0.5 + 0.4 * (emo.calmness ?? 0) + 0.2 * openScore - 0.2 * leadScore),
+        };
+        knobsRef.current = next;
+        return next;
+      });
+
+      emo.interrupted = false;
+      lastHumeRef.current = emo;
+
+      const maybeUpdate = sendPromptUpdateRef.current?.();
+      if (maybeUpdate && typeof (maybeUpdate as Promise<unknown>).then === 'function') {
+        await maybeUpdate;
+      }
+
+      const snapshot = turnsRef.current.slice(-6);
+      if (snapshot.length) {
+        setTimeout(() => {
+          if (coachOn) void requestCoachCue(snapshot);
+        }, 0);
+      }
+    },
+    [coachOn, ensureLastHume, flushPendingAssistantContent, requestCoachCue]
+  );
+
+  const handleAssistantTurn = useCallback(() => {
+    const emo = ensureLastHume();
+    emo.interrupted = false;
+    lastHumeRef.current = emo;
+  }, [ensureLastHume]);
+
+  const processAssistantMessage = useCallback(
+    (message: AssistantTranscriptMessage) => {
+      const id = message.id || crypto.randomUUID();
+      const timestamp = message.receivedAt instanceof Date ? message.receivedAt.toISOString() : new Date().toISOString();
+      const scores = message.models?.prosody?.scores ?? undefined;
+      updateEmotionsFromScores(scores as EmotionScores | undefined);
+      const turn: Turn = {
+        id,
+        role: 'persona',
+        text: message.message?.content ?? '',
+        at: timestamp,
+        scores,
+      };
+      recordTurn(turn, { ...(lastHumeRef.current ?? {}) });
+      handleAssistantTurn();
+    },
+    [handleAssistantTurn, recordTurn, updateEmotionsFromScores]
+  );
+
+  const flushPendingAssistantContent = useCallback(() => {
+    if (!userHasSpokenRef.current) return;
+    while (pendingAssistantMessagesRef.current.length) {
+      const next = pendingAssistantMessagesRef.current.shift();
+      if (next) processAssistantMessage(next);
+    }
+    if (!audioRef.current) return;
+    while (pendingAssistantAudioRef.current.length) {
+      const nextAudio = pendingAssistantAudioRef.current.shift();
+      if (nextAudio) void playAssistantAudio(nextAudio);
+    }
+  }, [playAssistantAudio, processAssistantMessage]);
+
+  const handleChatMetadata = useCallback(() => {
+    setConn('connected');
+    setConnected(true);
+    setError(null);
+    startRecorder();
+    void sendPromptUpdateRef.current?.();
+    flushPendingAssistantContent();
+  }, [flushPendingAssistantContent, startRecorder]);
+
+
+  const handleMessage = useCallback(
+    (msg: JSONMessage | AudioMessage) => {
+      if (!msg || typeof msg !== 'object') return;
+      if ((msg as AudioMessage).type === 'audio') {
+        enqueueAudio(arrayBufferToBlob((msg as AudioMessage).data, 'audio/webm')).catch(() => undefined);
+        return;
+      }
+
+      const jsonMsg = msg as JSONMessage;
+      const type = (jsonMsg as Record<string, unknown>).type as string | undefined;
+
+      if (type === 'chat_metadata') {
+        handleChatMetadata();
+        return;
+      }
+
+      if (type === 'audio_output') {
+        enqueueAudio(base64ToBlob((jsonMsg as { data: string }).data, 'audio/webm')).catch(() => undefined);
+        return;
+      }
+
+      if (type === 'assistant_message') {
+        const message = jsonMsg as AssistantTranscriptMessage;
+        if (!userHasSpokenRef.current) {
+          pendingAssistantMessagesRef.current.push(message);
+          return;
+        }
+        processAssistantMessage(message);
+        return;
+      }
+
+      if (type === 'user_message') {
+        const message = jsonMsg as UserTranscriptMessage;
+        if (!userHasSpokenRef.current) {
+          userHasSpokenRef.current = true;
+          flushPendingAssistantContent();
+        }
+        const id = message.id || crypto.randomUUID();
+        const timestamp = message.receivedAt instanceof Date ? message.receivedAt.toISOString() : new Date().toISOString();
+        const scores = message.models?.prosody?.scores ?? undefined;
+        updateEmotionsFromScores(scores as EmotionScores | undefined);
+        const turn: Turn = {
+          id,
+          role: 'user',
+          text: message.message?.content ?? '',
+          at: timestamp,
+          scores,
+        };
+        recordTurn(turn, { ...(lastHumeRef.current ?? {}) });
+        void handleUserTurn(turn.text);
+        return;
+      }
+
+      if (type === 'user_interruption') {
+        const state = ensureLastHume();
+        state.interrupted = true;
+        lastHumeRef.current = state;
+        return;
+      }
+
+      if (type === 'conversation.message') {
+        const payload = jsonMsg as Record<string, unknown>;
+        const message = (payload.message as Record<string, unknown> | undefined) ?? payload;
+        const text = (message.text ?? message.content ?? '') as string;
+        const cleaned = text.trim();
+        if (cleaned) {
+          const role = coerceRole(message.role ?? payload.role ?? payload.speaker);
+          const turn: Turn = {
+            id: crypto.randomUUID(),
+            role,
+            text: cleaned,
+            at: new Date().toISOString(),
+          };
+          recordTurn(turn, { ...(lastHumeRef.current ?? {}) });
+          if (role === 'user') void handleUserTurn(turn.text);
+          else handleAssistantTurn();
+        }
+        return;
+      }
+
+      if (typeof type === 'string' && type.includes('transcript')) {
+        const entries = extractTranscriptTurns(jsonMsg);
+        entries.forEach(({ role, text }) => {
+          const turn: Turn = {
+            id: crypto.randomUUID(),
+            role,
+            text,
+            at: new Date().toISOString(),
+          };
+          recordTurn(turn, { ...(lastHumeRef.current ?? {}) });
+          if (role === 'user') void handleUserTurn(turn.text);
+          else handleAssistantTurn();
+        });
+        return;
+      }
+
+      if (typeof type === 'string' && type.includes('emotion') && 'scores' in jsonMsg) {
+        updateEmotionsFromScores((jsonMsg as { scores?: EmotionScores }).scores);
+        return;
+      }
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[hume:unhandled]', jsonMsg);
+      }
+    },
+    [
+      enqueueAudio,
+      ensureLastHume,
+      handleAssistantTurn,
+      handleChatMetadata,
+      handleUserTurn,
+      processAssistantMessage,
+      flushPendingAssistantContent,
+      recordTurn,
+      updateEmotionsFromScores,
+    ]
+  );
+
+  const begin = useCallback(async () => {
+    if (clientRef.current || conn === 'connecting' || conn === 'handshaking' || conn === 'connected') return;
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setError('Microphone is not supported in this browser');
+      return;
+    }
+    if (typeof window === 'undefined' || typeof (window as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder === 'undefined') {
+      setError('MediaRecorder is not available in this browser');
+      return;
+    }
+
+    setError(null);
+    setConn('connecting');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      localStreamRef.current = stream;
+      await startMeters(stream);
+
+      const supported = getSupportedMimeType();
+      const recorderOptions: MediaRecorderOptions | undefined = supported?.success ? { mimeType: supported.mimeType } : undefined;
+      const recorder = new MediaRecorder(stream, recorderOptions);
+      recorderRef.current = recorder;
+      recorder.addEventListener('dataavailable', async (event: BlobEvent) => {
+        if (!event.data || event.data.size === 0) return;
+        const buffer = await event.data.arrayBuffer();
+        if (!clientRef.current || clientRef.current.readyState !== WebSocket.OPEN || buffer.byteLength === 0) {
+          return;
+        }
+        try {
+          clientRef.current.sendAudio(buffer);
+        } catch (sendErr) {
+          console.warn('[hume:sendAudio]', sendErr);
+        }
+      });
+
+      const socketConfig = createSocketConfig({
+        auth: { type: 'accessToken', value: accessToken },
+        ...(configId ? { configId } : {}),
+      });
+      const client = VoiceClient.create(socketConfig);
+      clientRef.current = client;
+
+      client.on('open', () => {
+        setConn('handshaking');
+        setError(null);
+      });
+
+      client.on('close', (event) => {
+        console.warn('[hume:close]', event);
+        setConn('closed');
+        setConnected(false);
+        if (event?.reason) {
+          setError(`Closed (${event.code}): ${event.reason}`);
+        }
+        releaseMedia();
+        clientRef.current = null;
+      });
+
+      client.on('error', (evt: unknown) => {
+        console.error('[hume:error:event]', evt);
+        setError(evt instanceof Error ? evt.message : `WebSocket error`);
+        setConn('idle');
+      });
+
+      client.on('message', handleMessage);
+      client.connect();
+    } catch (err) {
+      console.error('[hume:begin]', err);
+      setError(err instanceof Error ? err.message : 'Failed to start');
+      setConn('idle');
+      releaseMedia();
+      disconnectClient();
+    }
+  }, [accessToken, configId, conn, disconnectClient, handleMessage, releaseMedia, startMeters]);
+
+  const end = useCallback(async () => {
+    stopRecorder();
+    releaseMedia();
+    disconnectClient();
+    setConnected(false);
+    setConn('idle');
+    await supabaseBrowser()
+      .from('sessions')
+      .update({ ended_at: new Date().toISOString() })
+      .eq('id', sessionId)
+      .catch((err) => console.warn('[supabase:sessions]', err));
+  }, [disconnectClient, releaseMedia, sessionId, stopRecorder]);
+
+  useEffect(() => {
+    if (autoStart) {
+      void begin();
+      onAutoStartConsumed();
+    }
+  }, [autoStart, begin, onAutoStartConsumed]);
+
+  useEffect(() => () => {
+    if (resumePlaybackTimerRef.current) {
+      window.clearTimeout(resumePlaybackTimerRef.current);
+      resumePlaybackTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => {
+    stopRecorder();
+    releaseMedia();
+    disconnectClient();
+  }, [disconnectClient, releaseMedia, stopRecorder]);
+
+  const renderTurn = (turn: Turn) => {
+    const isUser = turn.role === 'user';
+    const entries = turn.scores
+      ? Object.entries(turn.scores)
+          .filter(([, value]) => typeof value === 'number' && Number.isFinite(value))
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+      : [];
+    const timeLabel = new Date(turn.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    return (
+      <div key={turn.id} className={`mt-3 flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
+        <div
+          className={`max-w-[78%] rounded-2xl border px-4 py-3 shadow-sm transition-colors ${
+            isUser ? 'border-indigo-500 bg-indigo-600 text-white' : 'border-gray-200 bg-white text-gray-900'
+          }`}
+        >
+          <div className={`flex items-center justify-between text-xs ${isUser ? 'text-indigo-100' : 'text-gray-500'}`}>
+            <span>{isUser ? 'You' : personaName}</span>
+            <span>{timeLabel}</span>
+          </div>
+          <div className={`mt-2 text-sm leading-relaxed ${isUser ? 'text-white' : 'text-gray-800'}`}>
+            {turn.text || <span className="italic opacity-70">...</span>}
+          </div>
+          {entries.length > 0 && (
+            <div className={`mt-3 rounded-xl border px-3 py-2 ${isUser ? 'border-white/20 bg-white/10' : 'border-gray-100 bg-gray-50'}`}>
+              <div className="grid gap-2">
+                {entries.map(([label, value], idx) => (
+                  <div key={label}>
+                    <div className={`flex justify-between text-[11px] font-medium ${isUser ? 'text-indigo-50' : 'text-gray-600'}`}>
+                      <span className="capitalize">{label.toLowerCase().replace(/_/g, ' ')}</span>
+                      <span>{value.toFixed(2)}</span>
+                    </div>
+                    <div className={`mt-1 h-1.5 rounded-full ${isUser ? 'bg-white/20' : 'bg-gray-200'}`}>
+                      <div
+                        className={`h-full rounded-full ${SCORE_COLORS[idx % SCORE_COLORS.length]}`}
+                        style={{ width: `${Math.min(100, Math.round(value * 100))}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const coachIndicator = coachOn && cue ? (
+    <div className="rounded-xl border bg-white/70 p-4 shadow-sm">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-gray-800">Coach feedback</span>
+        <span className={`rounded-full px-2 py-1 text-xs font-medium ${QUALITY_COLORS[cue.quality]}`}>{cue.quality}</span>
+      </div>
+      <div className="mt-2 text-sm font-medium text-gray-900">{cue.oneLine}</div>
+      <div className="mt-2 text-sm text-gray-700">
+        <span className="font-semibold text-gray-900">Try:</span> {cue.suggestion}
+      </div>
+      <div className="mt-2 text-xs text-gray-500">{cue.why}</div>
+      {cue.labels?.length ? (
+        <div className="mt-3 flex flex-wrap gap-1">
+          {cue.labels.map((label) => (
+            <span key={label} className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] text-indigo-700">
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  ) : (
+    <div className="rounded-xl border bg-white/60 p-4 text-sm text-gray-500">
+      {coachOn ? 'Coach listening… ask a question to get quick feedback.' : 'Coach is turned off.'}
+    </div>
+  );
+
+  return (
+    <Card className="space-y-5 p-6" aria-busy={conn === 'connecting' || conn === 'handshaking'}>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="text-sm text-gray-500">Live interview with</div>
+          <div className="text-lg font-semibold text-gray-900">{personaName}</div>
+          <div className="text-xs text-gray-500" aria-live="polite">Status: {conn}</div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={coachOn ? 'subtle' : 'ghost'}
+            size="sm"
+            aria-pressed={coachOn}
+            onClick={() => setCoachOn((prev) => !prev)}
+          >
+            Coach {coachOn ? 'On' : 'Off'}
+          </Button>
+          {connected ? (
+            <Button onClick={end} className="bg-gray-200 text-gray-800 hover:bg-gray-300">
+              Stop
+            </Button>
+          ) : (
+            <Button onClick={begin} disabled={conn === 'connecting' || conn === 'handshaking'}>
+              {conn === 'connecting' || conn === 'handshaking' ? 'Connecting...' : 'Start'}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {error && <div className="text-sm text-red-600">{error}</div>}
+
+      <div className="flex flex-wrap items-center gap-6 text-xs text-gray-600">
+        <div className="flex items-center gap-2">
+          <span className="font-medium">Mic</span>
+          <div className="h-2 w-32 rounded bg-gray-200">
+            <div className="h-2 rounded bg-indigo-500" style={{ width: `${Math.min(100, Math.round(micLevel * 100))}%` }} />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">Persona</span>
+          <div className="h-2 w-32 rounded bg-gray-200">
+            <div className="h-2 rounded bg-emerald-500" style={{ width: `${Math.min(100, Math.round(remoteLevel * 100))}%` }} />
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-gray-500">
+          <span className="font-medium">Knobs</span>
+          <span className="text-[11px]">G {knobs.guardedness.toFixed(2)} / H {knobs.hesitation.toFixed(2)} / T {knobs.talkativeness.toFixed(2)} / O {knobs.openness.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+        <div className="space-y-4">
+          <div id="live-interview-chat" className="max-h-72 overflow-y-auto rounded-xl border bg-gray-50/60 px-4 py-3">
+            {turns.length === 0 ? (
+              <div className="text-sm text-gray-500">Say something to begin the interview...</div>
+            ) : (
+              turns.map((turn) => renderTurn(turn))
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              value={text}
+              onChange={(event) => setText((event.target as HTMLInputElement).value)}
+              className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              placeholder="Type a message to send..."
+              disabled={conn !== 'connected'}
+            />
+            <Button
+              onClick={() => {
+                const trimmed = text.trim();
+                if (!trimmed) return;
+                if (!userHasSpokenRef.current) {
+                  userHasSpokenRef.current = true;
+                  flushPendingAssistantContent();
+                }
+                try {
+                  clientRef.current?.sendUserInput(trimmed);
+                } catch (err) {
+                  console.warn('[hume:sendUserInput]', err);
+                }
+                setText('');
+              }}
+              disabled={conn !== 'connected' || !clientRef.current || clientRef.current.readyState !== WebSocket.OPEN}
+            >
+              Send
+            </Button>
+          </div>
+        </div>
+        {coachIndicator}
+      </div>
+
+      <audio ref={audioRef} autoPlay playsInline />
+    </Card>
+  );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

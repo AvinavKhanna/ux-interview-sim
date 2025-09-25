@@ -1,95 +1,104 @@
-export type MaybeList = string | string[] | null | undefined;
+﻿export type TechLevel = "low" | "medium" | "high";
+export type Personality = "warm" | "neutral" | "reserved";
 
-/** Normalize possibly-delimited strings into a clean array. */
-export function toArray(value: MaybeList): string[] {
-  if (value == null) return [];
-  const asList = Array.isArray(value) ? value : [value];
-
-  return asList
-    .map(String)
-    .flatMap((s) => s.split(/[,
-;]+/)) // accept commas, newlines, semicolons
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/** Small summary string for prompts / UI. */
-export function summarizePersona(p: {
-  name?: string;
-  age?: number;
-  occupation?: string;
-  techfamiliarity?: string;
-  traits?: MaybeList;
-  painpoints?: MaybeList;
-}): string {
-  const traits = toArray(p.traits).join(', ');
-  const pains = toArray(p.painpoints).join(', ');
-  const tech = (p.techfamiliarity || 'medium').toString().toLowerCase();
-
-  return [
-    p.name ? `Name: ${p.name}` : null,
-    p.age ? `Age: ${p.age}` : null,
-    p.occupation ? `Occupation: ${p.occupation}` : null,
-    `Tech: ${tech}`,
-    traits ? `Traits: ${traits}` : null,
-    pains ? `Pain points: ${pains}` : null,
-  ]
-    .filter(Boolean)
-    .join(' - ');
-}
-
-/** Knobs type kept for compatibility with callers. */
-export type Knobs = {
-  speakingRate?: number;
-  bargeIn?: boolean;
-  minUserSilenceMs?: number;
-  maxAssistantUtteranceMs?: number;
-  assistantBackoffMs?: number;
+export type PersonaKnobs = {
+  age: number;
+  traits: string[];
+  techFamiliarity: TechLevel;
+  personality: Personality;
+  voiceConfigId: string;
+  speechRate?: number; // <1 slower, >1 faster
+  turnTaking?: { maxSeconds: number; interruptOnVoice: boolean };
 };
 
-/** Return safe defaults if callers still expect knobs. */
-export function deriveInitialKnobs(): Knobs {
+// Use robust splitting without fragile inline regex literals.
+function asList(input: string | string[] | undefined): string[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input.map(String).map((s) => s.trim()).filter(Boolean);
+  // Safe split: commas, semicolons, or newlines
+  const splitter = /[,\n;]+/g;
+  return String(input).split(splitter).map((s) => s.trim()).filter(Boolean);
+}
+
+function ageBucket(age: number): "youth" | "adult" | "senior" {
+  if (Number.isFinite(age) && age >= 60) return "senior";
+  if (Number.isFinite(age) && age <= 24) return "youth";
+  return "adult";
+}
+
+function env(name: string, fallback = "default"): string {
+  if (typeof process !== "undefined" && process.env && process.env[name]) {
+    return process.env[name] as string;
+  }
+  return fallback;
+}
+
+// Voice config mapping derived from env (seen in .env.local screenshot)
+// HUME_CFG_* envs should be defined; otherwise returns "default".
+function mapVoiceId(bucket: "youth" | "adult" | "senior", personality: Personality, gender?: "male" | "female"): string {
+  // Prefer genderless mapping if you don't collect it; default to "male" for mapping symmetry.
+  const g = gender ?? "male";
+  const key =
+    bucket === "youth"
+      ? (g === "female" ? "HUME_CFG_FEMALE_YOUNG" : "HUME_CFG_MALE_YOUNG")
+      : bucket === "senior"
+      ? (g === "female" ? "HUME_CFG_FEMALE_OLD" : "HUME_CFG_MALE_OLD")
+      : // adult/mid
+        (g === "female" ? "HUME_CFG_FEMALE_MID" : "HUME_CFG_MALE_MID");
+  return env(key);
+}
+
+export function deriveInitialKnobs(input: {
+  age: number;
+  traits: string[] | string;
+  techFamiliarity?: TechLevel;
+  personality?: Personality;
+  genderHint?: "male" | "female"; // optional hint if you store it elsewhere
+}): PersonaKnobs {
+  const tech = input.techFamiliarity ?? "medium";
+  const pers = input.personality ?? "neutral";
+  const bucket = ageBucket(input.age);
+  const voiceConfigId = mapVoiceId(bucket, pers, input.genderHint);
+  const speechRate = input.age >= 60 ? 0.9 : 1.0;
+  const turnTaking = { maxSeconds: 8, interruptOnVoice: true };
+  const traits = asList(input.traits);
+
   return {
-    speakingRate: 0.92,        // slightly slower
-    bargeIn: false,            // don't talk over the user
-    minUserSilenceMs: 700,     // wait before taking the turn
-    maxAssistantUtteranceMs: 6500,
-    assistantBackoffMs: 900,
+    age: input.age,
+    traits,
+    techFamiliarity: tech,
+    personality: pers,
+    voiceConfigId,
+    speechRate,
+    turnTaking,
   };
 }
 
-/**
- * Build a system prompt string for Hume EVI (or any LLM),
- * instructing strict turn-taking and persona behavior.
- * Return shape matches what /api/hume/token expects ({ systemPrompt }).
- */
-export function buildPrompt(opts: {
-  persona?: {
-    name?: string;
-    age?: number;
-    occupation?: string;
-    techfamiliarity?: string;
-    traits?: MaybeList;
-    painpoints?: MaybeList;
-  };
-  project?: { title?: string; description?: string };
-}): { systemPrompt: string } {
-  const p = opts.persona ?? {};
-  const summary = summarizePersona(p);
-  const projTitle = opts.project?.title || 'Untitled project';
-  const projDesc = (opts.project?.description || '').trim();
+export function buildPrompt(args: {
+  projectContext: string;
+  persona: PersonaKnobs;
+}): { systemPrompt: string; behaviorHints: string[] } {
+  const { projectContext, persona } = args;
+  const hints: string[] = [
+    `turn_taking: enforced(${persona.turnTaking?.maxSeconds ?? 8}s, interruptOnVoice=${persona.turnTaking?.interruptOnVoice ?? true})`,
+    `speech_rate: ${persona.speechRate ?? 1.0}`,
+    `tech_familiarity: ${persona.techFamiliarity}`,
+    `personality: ${persona.personality}`,
+    `traits: ${persona.traits.join(", ") || "none"}`,
+  ];
 
   const systemPrompt = [
-    `You are role-playing a UX research PARTICIPANT.`,
-    `Stay strictly in character. Be natural, human, and consistent with this profile: ${summary || 'Anonymous participant'}.`,
-    `Context: ${projTitle}${projDesc ? ` - ${projDesc}` : ''}.`,
-    `Turn-taking rules:`,
-    `- Do NOT start the conversation. Wait for the interviewer to speak first.`,
-    `- Speak one utterance at a time, then pause and wait for the interviewer.`,
-    `- If interrupted, stop and yield immediately.`,
-    `- Use everyday speech patterns: short sentences, occasional hesitations, emotion aligned with persona traits.`,
-    `- If asked for age/name, use the persona's values; don't change these mid-session.`,
-  ].join('\n');
+    `You are role-playing a realistic interview participant for a UX research session.`,
+    `Project context: ${projectContext}.`,
+    `Persona: ${persona.age} y/o, personality=${persona.personality}, tech=${persona.techFamiliarity}.`,
+    `Behavior rules:`,
+    `- Do NOT start the conversation. Wait for the interviewer to begin.`,
+    `- Enforce turn-taking: stop speaking immediately if the interviewer starts talking.`,
+    `- Speak naturally with brief hesitations and emotions appropriate for the personality.`,
+    `- Keep answers ~2-5 sentences unless the interviewer probes for more.`,
+    `- If confused, ask for clarification rather than inventing details.`,
+  ].join("\n");
 
-  return { systemPrompt };
+  return { systemPrompt, behaviorHints: hints };
 }
+
