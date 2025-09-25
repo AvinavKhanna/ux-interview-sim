@@ -1,4 +1,5 @@
-import OpenAI from "openai";
+import { openai } from "@/lib/openai";
+import { CHAT_MODEL } from "@/lib/models";
 
 export const runtime = "nodejs";
 
@@ -60,8 +61,6 @@ export async function POST(req: Request) {
       .map((t) => `${t.who.toUpperCase()}: ${t.text}`)
       .join("\n");
 
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-
     const prompt = `Analyze this UX PRACTICE INTERVIEW focusing on the INTERVIEWER'S TECHNIQUE only (not the product).
 Return ONLY valid JSON with this EXACT shape and keys:
 
@@ -83,7 +82,7 @@ ${formatted}
 `;
 
     const res = await openai.chat.completions.create({
-      model: "gpt-5",
+      model: CHAT_MODEL,
       temperature: 0,
       messages: [{ role: "user", content: prompt }],
     });

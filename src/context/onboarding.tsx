@@ -1,12 +1,6 @@
 'use client';
 import React from 'react';
-import {
-  // Canonical app types
-  type Persona as PersonaType,
-  type ProjectDraft as ProjectInfo,
-  type TechLevel,
-  type Personality,
-} from '@/types';
+import type { Persona as PersonaType, ProjectDraft as ProjectInfo, TechLevel, Personality } from '@/types';
 
 // Re-export the Persona type so existing imports from this module keep working
 export type Persona = PersonaType;
@@ -20,9 +14,11 @@ export type OnboardingState = {
   project: ProjectInfo;
   suggested: Persona[];
   selected: Persona | null;
+  projectId: string | null;
   setProject: (p: ProjectInfo) => void;
   setSuggested: (list: Persona[]) => void;
   setSelected: (p: Persona | null) => void;
+  setProjectId: (id: string | null) => void;
 };
 
 /**
@@ -129,10 +125,11 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const [project, setProject] = React.useState<ProjectInfo>(DEFAULT_PROJECT);
   const [suggested, setSuggested] = React.useState<Persona[]>([]);
   const [selected, setSelected] = React.useState<Persona | null>(null);
+  const [projectId, setProjectId] = React.useState<string | null>(null);
 
   const value = React.useMemo(
-    () => ({ project, suggested, selected, setProject, setSuggested, setSelected }),
-    [project, suggested, selected]
+    () => ({ project, suggested, selected, projectId, setProject, setSuggested, setSelected, setProjectId }),
+    [project, suggested, selected, projectId]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

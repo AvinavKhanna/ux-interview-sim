@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabaseBrowser } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 
 type Row = { id: string; name?: string; title?: string };
@@ -16,8 +16,9 @@ export default function NewSessionPage() {
 
   useEffect(() => {
     (async () => {
-      const { data: p } = await supabase.from('personas').select('id,name').order('created_at', { ascending: false });
-      const { data: pr } = await supabase.from('projects').select('id,title').order('created_at', { ascending: false });
+      const sb = supabaseBrowser();
+      const { data: p } = await sb.from('personas').select('id,name').order('created_at', { ascending: false });
+      const { data: pr } = await sb.from('projects').select('id,title').order('created_at', { ascending: false });
       setPersonas(p || []);
       setProjects(pr || []);
     })();
@@ -25,11 +26,12 @@ export default function NewSessionPage() {
 
   const start = async () => {
     setLoading(true);
-    const { data: auth } = await supabase.auth.getUser();
+    const sb = supabaseBrowser();
+    const { data: auth } = await sb.auth.getUser();
     if (!auth.user) { alert('Please log in first.'); setLoading(false); return; }
     if (!personaId || !projectId) { alert('Choose a persona and a project.'); setLoading(false); return; }
 
-    const { data, error } = await supabase.from('sessions')
+    const { data, error } = await sb.from('sessions')
       .insert({ user_id: auth.user.id, persona_id: personaId, project_id: projectId })
       .select('id')
       .single();

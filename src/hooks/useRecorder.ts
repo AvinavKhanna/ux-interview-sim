@@ -73,9 +73,9 @@ export function useRecorder(): UseRecorder {
     const mr = mediaRef.current;
     if (!mr) return null;
 
-    // ensure enough time for at least one chunk
+    // ensure enough time for at least one chunk; reduce minimum to lower latency
     const elapsed = Date.now() - startedAtRef.current;
-    if (elapsed < 800) await new Promise(r => setTimeout(r, 800 - elapsed));
+    if (elapsed < 300) await new Promise(r => setTimeout(r, 300 - elapsed));
 
     try { if (mr.state === 'recording') mr.requestData(); } catch {}
 

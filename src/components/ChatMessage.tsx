@@ -21,7 +21,7 @@ export function ChatMessage({
           <p className="italic text-gray-500">{isUser ? '(no transcript)' : '(no reply)'}</p>
         )}
         {audioUrl ? (
-          <audio className="mt-2 w-full" src={audioUrl} controls preload="none" />
+          <audio className="mt-2 w-full" src={audioUrl} controls preload="metadata" />
         ) : null}
       </div>
     </div>

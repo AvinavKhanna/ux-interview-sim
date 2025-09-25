@@ -1,9 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseServer } from '@/lib/supabase';
 
-
-const supabase = supabaseServer();
-
 export async function GET() {
   const supabase = supabaseServer();
   const { data, error } = await supabase.from('personas').select('*').order('created_at', { ascending: false });

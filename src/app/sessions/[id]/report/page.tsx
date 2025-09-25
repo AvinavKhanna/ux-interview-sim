@@ -1,27 +1,39 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useParams } from 'next/navigation';
+import { supabaseBrowser } from '@/lib/supabase';
 
-export default function ReportPage({ params }: { params: { id: string } }) {
-  const sessionId = params.id;
+export default function ReportPage() {
+  const { id: sessionId } = useParams<{ id: string }>();
   const [report, setReport] = useState<any>(null);
   const [turns, setTurns] = useState<any[]>([]);
   const [downloadUrl, setDownloadUrl] = useState<string| null>(null);
 
   useEffect(() => {
     (async () => {
-      const { data: t } = await supabase.from('turns').select('who,text,ts').eq('session_id', sessionId).order('ts', { ascending: true });
+      const sb = supabaseBrowser();
+      const { data: t } = await sb
+        .from('turns')
+        .select('role,text,created_at')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: true });
       setTurns(t || []);
 
+      // Build transcript the summariser expects
+      const transcript = (t || []).map((row: any) => ({
+        who: row.role === 'user' ? 'student' : 'persona',
+        text: row.text || '',
+      }));
+
       // get summarizer output
-      const r = await fetch('/api/summarize-session', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ transcript: t }) });
+      const r = await fetch('/api/summarise-session', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ transcript }) });
       const json = await r.json();
       setReport(json);
 
       // signed URL for audio if present
-      const s = await supabase.from('sessions').select('audio_url').eq('id', sessionId).single();
+      const s = await sb.from('sessions').select('audio_url').eq('id', sessionId).single();
       if (s.data?.audio_url) {
-        const signed = await supabase.storage.from('audio').createSignedUrl(s.data.audio_url, 60*60); // 1h
+        const signed = await sb.storage.from('audio').createSignedUrl(s.data.audio_url, 60*60); // 1h
         setDownloadUrl(signed.data?.signedUrl || null);
       }
     })();

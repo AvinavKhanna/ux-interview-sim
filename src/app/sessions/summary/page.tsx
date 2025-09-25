@@ -15,7 +15,7 @@ function deriveTitle(text?: string) {
 
 export default function SummaryPage() {
   const router = useRouter();
-  const { project, selected } = useOnboarding();
+  const { project, selected, projectId } = useOnboarding();
   const [starting, setStarting] = React.useState(false);
 
   const description = project?.description?.trim() ?? '';
@@ -29,7 +29,7 @@ export default function SummaryPage() {
       const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ personaId: selected.id, transcript: [] }),
+        body: JSON.stringify({ projectId: projectId ?? undefined, personaId: selected.id, persona: selected }),
       });
       const data = await res.json();
       if (!res.ok) {

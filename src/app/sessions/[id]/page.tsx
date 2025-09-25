@@ -1,90 +1,110 @@
-'use client';
+import { supabaseServer } from '@/lib/supabase';
+import { Page, Card } from '@/components/UI';
+import StartInterviewClient from './StartInterviewClient';
 
-import React, { use, useEffect, useState } from 'react';
-import { useRecorder } from '@/hooks/useRecorder';
-import { ChatMessage } from '@/components/ChatMessage';
+type PersonaRow = {
+  name?: string | null;
+  age?: number | null;
+  occupation?: string | null;
+  techfamiliarity?: string | null;
+  personality?: string | null;
+  goals?: string[] | null;
+  frustrations?: string[] | null;
+  painpoints?: string[] | null;
+  notes?: string | null;
+};
 
-type Msg = { role: 'user' | 'persona'; text: string; audioUrl?: string };
+type ProjectRow = {
+  title?: string | null;
+  description?: string | null;
+} | null;
 
-export default function InterviewPage(props: { params: Promise<{ id: string }> }) {
-  // ‚úÖ Unwrap Next.js 15 params Promise
-  const { id } = use(props.params);
+const toList = (value: string[] | string | null | undefined): string[] => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean);
+  return value.split(/[,;
+]+/).map((entry) => entry.trim()).filter(Boolean);
+};
 
-  const { start, stop, status, error } = useRecorder();
-  const [messages, setMessages] = useState<Msg[]>([]);
+export const revalidate = 0;
+export const dynamic = 'force-dynamic';
 
-  async function handleRecord() {
-    await start();
-  }
+export default async function SessionPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id: sessionId } = await params;
+  const sb = supabaseServer();
 
-  async function handleStop() {
-    const blob = await stop();
-    if (!blob) return;
+  const { data: session } = await sb
+    .from('sessions')
+    .select('id, persona_id, project_id')
+    .eq('id', sessionId)
+    .single();
 
-    // normalize blob ‚Üí File for Whisper (use webm)
-    const file = new File([blob], 'q.webm', { type: 'audio/webm' });
+  const personaId = (session as { persona_id?: string | null; personaId?: string | null } | null)?.persona_id ??
+    (session as { personaId?: string | null } | null)?.personaId ??
+    null;
+  const projectId = (session as { project_id?: string | null; projectId?: string | null } | null)?.project_id ??
+    (session as { projectId?: string | null } | null)?.projectId ??
+    null;
 
-    const fd = new FormData();
-    fd.append('audio', file);
-    fd.append('sessionId', id); // <-- now defined
+  const { data: personaRow } = await sb
+    .from('personas')
+    .select('id,name,age,occupation,techfamiliarity,personality,goals,frustrations,painpoints')
+    .eq('id', String(personaId ?? ''))
+    .maybeSingle();
 
-    const res = await fetch('/api/interview', { method: 'POST', body: fd });
-    const data = await res.json();
+  const { data: projectRow } = await sb
+    .from('projects')
+    .select('id,title,description')
+    .eq('id', String(projectId ?? ''))
+    .maybeSingle();
 
-    if (!res.ok) {
-      alert(data.error || 'Interview failed');
-      return;
-    }
+  const personaData: PersonaRow | null = personaRow ? (personaRow as PersonaRow) : null;
+  const projectData: ProjectRow = projectRow
+    ? {
+        title: (projectRow as { title?: string | null }).title ?? null,
+        description: (projectRow as { description?: string | null }).description ?? null,
+      }
+    : null;
 
-    // Build next messages explicitly to keep Msg typing happy
-    const next: Msg[] = [];
-    next.push({ role: 'user', text: data.transcript });
-    if (data.replyText && typeof data.replyText === 'string' && data.replyText.trim().length) {
-      next.push({
-        role: 'persona',
-        text: data.replyText,
-        audioUrl: data.ttsUrl ?? undefined,
-      });
-    }
-
-    setMessages((prev) => [...prev, ...next]);
-  }
-
-  useEffect(() => {
-    if (error) alert(error);
-  }, [error]);
+  const personaGoals = toList(personaData?.goals ?? null);
+  const personaTraits = toList(personaData?.painpoints ?? null);
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-6">
-      <h1 className="text-2xl font-semibold mb-4">Interview</h1>
-
-      <div className="border rounded-xl p-4 h-[65vh] overflow-y-auto bg-white">
-        {messages.length === 0 && (
-          <div className="text-gray-500">
-            Press ‚ÄúHold to Talk‚Äù, ask your question, then release.
+    <Page title="Session">
+      <div className="space-y-6">
+        <Card className="p-6">
+          <div className="mb-2 text-lg font-medium">Session Context</div>
+          <div className="grid gap-6 text-sm text-gray-800 lg:grid-cols-2">
+            <div>
+              <div className="mb-1 font-medium">Persona</div>
+              {personaData ? (
+                <div className="space-y-1">
+                  <div>{personaData.name ?? 'Unnamed participant'}</div>
+                  <div className="text-gray-600">Age {personaData.age ?? 'ó'} ∑ {personaData.occupation ?? 'Participant'}</div>
+                  <div className="text-gray-600">Tech: {personaData.techfamiliarity ?? 'ó'} ∑ {personaData.personality ?? 'ó'}</div>
+                  {personaGoals.length > 0 && <div className="text-gray-700">Goals: {personaGoals.slice(0, 2).join('; ')}</div>}
+                  {personaTraits.length > 0 && <div className="text-gray-700">Traits: {personaTraits.slice(0, 2).join('; ')}</div>}
+                </div>
+              ) : (
+                <div className="text-gray-500">Persona not found.</div>
+              )}
+            </div>
+            <div>
+              <div className="mb-1 font-medium">Project</div>
+              {projectData ? (
+                <div className="space-y-1">
+                  {projectData.title && <div>{projectData.title}</div>}
+                  {projectData.description && <div className="whitespace-pre-wrap text-gray-600">{projectData.description}</div>}
+                </div>
+              ) : (
+                <div className="text-gray-500">No project attached.</div>
+              )}
+            </div>
           </div>
-        )}
-        {messages.map((m, i) => (
-          <ChatMessage key={i} role={m.role} text={m.text} audioUrl={m.audioUrl} />
-        ))}
-      </div>
+        </Card>
 
-      <div className="mt-4 flex items-center gap-3">
-        <button
-          className={`px-4 py-2 rounded-full text-white ${
-            status === 'recording' ? 'bg-red-600' : 'bg-blue-600'
-          }`}
-          onMouseDown={handleRecord}
-          onMouseUp={handleStop}
-          onTouchStart={handleRecord}
-          onTouchEnd={handleStop}
-        >
-          {status === 'recording' ? 'Recording‚Ä¶ release to send' : 'Hold to Talk'}
-        </button>
-        <span className="text-sm text-gray-500">
-          {status === 'recording' ? 'Listening‚Ä¶' : 'Idle'}
-        </span>
+        <StartInterviewClient sessionId={sessionId} persona={personaData} project={projectData} />
       </div>
-    </div>
+    </Page>
   );
 }

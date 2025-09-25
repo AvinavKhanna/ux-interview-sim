@@ -15,7 +15,7 @@ function deriveTitle(text: string) {
 
 export default function ProjectPage() {
   const router = useRouter();
-  const { project, setProject, setSuggested, setSelected } = useOnboarding();
+  const { project, setProject, setSuggested, setSelected, setProjectId } = useOnboarding();
 
   const [mode, setMode] = React.useState<Mode>(
     project.genericPractice ? 'practice' : 'project'
@@ -28,6 +28,7 @@ export default function ProjectPage() {
       const payload = { description: '', genericPractice: true };
       setProject(payload);
       setSelected(null);
+      setProjectId(null);
       // keep mock for practice mode (no description context)
       setSuggested(mockSuggestPersonas(payload));
       router.push('/personas');
@@ -38,7 +39,7 @@ export default function ProjectPage() {
     setLoading(true);
     try {
       // 1) Save project directly with supabaseBrowser (you already have this client)
-      const { data, error } = await supabaseBrowser
+      const { data, error } = await supabaseBrowser()
         .from('projects')
         .insert([{ title: deriveTitle(desc), description: desc, domain_tags: [] }])
         .select()
@@ -53,6 +54,7 @@ export default function ProjectPage() {
       const ctxProject = { description: data?.description ?? desc, genericPractice: false };
       setProject(ctxProject);
       setSelected(null);
+      if (data?.id) setProjectId(data.id);
 
       // 2) Ask OpenAI for suggestions via your API
       const res = await fetch('/api/suggest-persona', {
@@ -123,10 +125,11 @@ export default function ProjectPage() {
         <Button onClick={next} disabled={!canContinue || loading}>
           {loading ? 'Saving…' : 'Next →'}
         </Button>
-        <Button variant="ghost" onClick={() => router.push('/login')}>
+        <Button variant="ghost" onClick={() => router.push('/') }>
           Back
         </Button>
       </div>
     </Page>
   );
 }
+

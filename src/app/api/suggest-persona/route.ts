@@ -1,5 +1,6 @@
 export const runtime = 'nodejs';
-import OpenAI from 'openai';
+import { openai } from '@/lib/openai';
+import { CHAT_MODEL } from '@/lib/models';
 
 
 export async function POST(req: Request) {
@@ -9,13 +10,12 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ error: 'Missing description' }), { status: 400 });
     }
 
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-    const prompt = `Given this UX project description, suggest 3 realistic interview personas as a valid JSON array.
+    const prompt = `Given this UX project description, suggest THREE realistic interview personas as a JSON array.
 
-Each item MUST be exactly:
+Each array item MUST be exactly this shape (no extra keys):
 {
   "name": string,
-  "occupation": string,           // e.g., "University student", "Retail associate", "Junior marketer"
+  "occupation": string,
   "demographics": { "age": number, "location": string },
   "traits": { "techSavvy": boolean },
   "goals": string,
@@ -24,19 +24,29 @@ Each item MUST be exactly:
 }
 
 Rules:
-- Make occupations VARIED and plausible for the project domain (avoid duplicates).
-- Keep language concise.
-- Return ONLY the JSON array, no prose.
+- Make occupations varied and plausible for the domain (avoid duplicates).
+- Keep language concise and grounded.
+- Output ONLY the JSON array, no prose, no code fences.
 
 Description: """${description}"""`;
 
-    const res = await openai.chat.completions.create({
-      model: 'gpt-5',
-      temperature: 0.7,
-      messages: [{ role: 'user', content: prompt }],
-    });
-
-    const raw = res.choices[0].message?.content ?? '[]';
+    // Prefer CHAT_MODEL but fall back if not available
+    let raw = '[]';
+    try {
+      const r1 = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        temperature: 0.7,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      raw = r1.choices[0].message?.content ?? '[]';
+    } catch (e) {
+      const r2 = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.7,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      raw = r2.choices[0].message?.content ?? '[]';
+    }
     const cleaned = raw.replace(/```json|```/g, '').trim();
 
     let parsed: unknown;
