@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildPrompt, deriveInitialKnobs } from "@/lib/prompt/personaPrompt";
@@ -16,23 +16,32 @@ type Props = { id: string };
 
 type ConnectState = "idle" | "fetching-token" | "connecting" | "connected" | "error";
 
+type Turn = {
+  id: string;
+  role: "user" | "persona";
+  text: string;
+  at: string;
+};
+
 export default function StartInterviewClient({ id }: Props) {
-  const [coachOn, setCoachOn] = useState(false);
   const [state, setState] = useState<ConnectState>("idle");
   const [statusMsg, setStatusMsg] = useState<string>("Ready.");
-  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const [turns, setTurns] = useState<Turn[]>([]);
+  // Resolved from the token route (real selected persona/project)
+  const [serverPrompt, setServerPrompt] = useState<string | null>(null);
+  const [serverPersona, setServerPersona] = useState<any | null>(null);
+  const [serverProject, setServerProject] = useState<any | null>(null);
 
-  // persona + prompt
-  const persona = useMemo(
-    () =>
-      deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
+  // Fallback persona + prompt (used until server returns real data)
+  const fallbackPersona = useMemo(
+    () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
     []
   );
-
-  const { systemPrompt, behaviorHints } = useMemo(
-    () => buildPrompt({ projectContext: "Banking app for seniors", persona }),
-    [persona]
+  const fallbackPrompt = useMemo(
+    () => buildPrompt({ projectContext: "General UX research interview.", persona: fallbackPersona }).systemPrompt,
+    [fallbackPersona]
   );
 
   // audio + ws
@@ -138,17 +147,11 @@ export default function StartInterviewClient({ id }: Props) {
   }, []);
 
   const stopAll = useCallback(() => {
-    try {
-      recorderRef.current?.stop();
-    } catch {}
+    try { recorderRef.current?.stop(); } catch {}
     recorderStartedRef.current = false;
-    try {
-      localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    } catch {}
+    try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
     localStreamRef.current = null;
-    try {
-      clientRef.current?.disconnect();
-    } catch {}
+    try { clientRef.current?.disconnect(); } catch {}
     clientRef.current = null;
     stopMeters();
     const el = audioRef.current;
@@ -160,9 +163,19 @@ export default function StartInterviewClient({ id }: Props) {
 
   useEffect(() => () => stopAll(), [stopAll]);
 
+  // Scroll chat to bottom on new turn
+  useEffect(() => {
+    const el = document.getElementById("chat-area");
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [turns]);
+
+  const appendTurn = useCallback((t: Turn) => {
+    setTurns((prev) => [...prev, t]);
+  }, []);
+
   const connectVoice = useCallback(async (token: string) => {
     setState("connecting");
-    setStatusMsg("Connecting to voice???");
+    setStatusMsg("Connecting to voice...");
     setError(null);
 
     try {
@@ -180,11 +193,7 @@ export default function StartInterviewClient({ id }: Props) {
         if (!evt.data || evt.data.size === 0) return;
         const buf = await evt.data.arrayBuffer();
         if (clientRef.current && clientRef.current.readyState === WebSocket.OPEN) {
-          try {
-            clientRef.current.sendAudio(buf);
-          } catch (e) {
-            console.warn("sendAudio", e);
-          }
+          try { clientRef.current.sendAudio(buf); } catch (e) { console.warn("sendAudio", e); }
         }
       });
 
@@ -197,8 +206,7 @@ export default function StartInterviewClient({ id }: Props) {
         setState("connected");
         setStatusMsg("Connected. Waiting for your first question.");
         setError(null);
-        // send prompt - do not start talking until interviewer
-        try { client.sendSessionSettings?.({ systemPrompt }); } catch {}
+        try { client.sendSessionSettings?.({ systemPrompt: serverPrompt ?? fallbackPrompt }); } catch {}
         startRecorder();
       });
 
@@ -224,17 +232,38 @@ export default function StartInterviewClient({ id }: Props) {
           el.onended = () => URL.revokeObjectURL(url);
           return;
         }
-        const json = msg as JSONMessage;
-        const type = (json as any)?.type as string | undefined;
+        const json = msg as any;
+        const type = json?.type as string | undefined;
+
         if (type === "audio_output") {
           const el = audioRef.current;
           if (!el) return;
-          const b64 = (json as any).data as string;
+          const b64 = json.data as string;
           const blob = base64ToBlob(b64, "audio/webm");
           const url = URL.createObjectURL(blob);
           el.src = url;
           el.play().catch(() => undefined);
           el.onended = () => URL.revokeObjectURL(url);
+          return;
+        }
+
+        const toText = (obj: any): string => (obj?.message?.content ?? obj?.text ?? obj?.content ?? "").toString();
+        if (type === "assistant_message") {
+          const content = toText(json);
+          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "persona", text: content.trim(), at: new Date().toISOString() });
+          return;
+        }
+        if (type === "user_message") {
+          const content = toText(json);
+          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString() });
+          return;
+        }
+        if (type === "conversation.message") {
+          const content = toText(json);
+          const roleRaw = (json?.message?.role ?? json?.role ?? json?.speaker ?? "").toString().toLowerCase();
+          const role: "user" | "persona" = roleRaw.includes("assistant") || roleRaw.includes("persona") ? "persona" : "user";
+          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role, text: content.trim(), at: new Date().toISOString() });
+          return;
         }
       });
 
@@ -245,20 +274,23 @@ export default function StartInterviewClient({ id }: Props) {
       setState("error");
       stopAll();
     }
-  }, [startMeters, startRecorder, stopAll, systemPrompt]);
+  }, [appendTurn, startMeters, startRecorder, stopAll, systemPrompt]);
 
   const startInterview = useCallback(async () => {
     try {
       setState("fetching-token");
-      setStatusMsg("Fetching Hume token???");
+      setStatusMsg("Fetching Hume token...");
       setError(null);
 
-      // Prefer GET with sessionId
+      // Prefer GET with sessionId (also capture persona/project + prompt)
       let token: string | null = null;
       const getRes = await fetch(`/api/hume/token?sessionId=${encodeURIComponent(id)}`, { method: "GET", cache: "no-store" });
       if (getRes.ok) {
         const j = await getRes.json();
         token = j.access_token ?? j.accessToken ?? null;
+        setServerPrompt(typeof j.personaPrompt === "string" ? j.personaPrompt : null);
+        setServerPersona(j.persona ?? null);
+        setServerProject(j.project ?? null);
       }
       if (!token) {
         const postRes = await fetch("/api/hume/token", {
@@ -269,13 +301,15 @@ export default function StartInterviewClient({ id }: Props) {
         if (postRes.ok) {
           const j = await postRes.json();
           token = j.access_token ?? j.accessToken ?? null;
+          setServerPrompt(typeof j.personaPrompt === "string" ? j.personaPrompt : null);
+          setServerPersona(j.persona ?? null);
+          setServerProject(j.project ?? null);
         } else {
           const t = await postRes.text();
           throw new Error(`Token fetch failed: ${postRes.status} ${t}`);
         }
       }
       if (!token) throw new Error("Token missing in response");
-      setAccessToken(token);
 
       // Ensure there is a session row (non-blocking if it already exists)
       await fetch("/api/sessions", {
@@ -309,12 +343,18 @@ export default function StartInterviewClient({ id }: Props) {
       try { if (!el.paused) el.pause(); } catch {}
       if (resumeTimer) { window.clearTimeout(resumeTimer); resumeTimer = null; }
     } else {
-      resumeTimer = window.setTimeout(() => {
-        try { if (el.paused && !el.ended) void el.play(); } catch {}
-      }, 400);
+      resumeTimer = window.setTimeout(() => { try { if (el.paused && !el.ended) void el.play(); } catch {} }, 400);
     }
     return () => { if (resumeTimer) window.clearTimeout(resumeTimer); };
   }, [micLevel]);
+
+  const sendText = useCallback(() => {
+    const trimmed = text.trim();
+    if (!trimmed || !clientRef.current || clientRef.current.readyState !== WebSocket.OPEN) return;
+    try { clientRef.current.sendUserInput(trimmed); } catch {}
+    appendTurn({ id: crypto.randomUUID(), role: "user", text: trimmed, at: new Date().toISOString() });
+    setText("");
+  }, [appendTurn, text]);
 
   return (
     <div className="space-y-6">
@@ -341,10 +381,6 @@ export default function StartInterviewClient({ id }: Props) {
           >
             Stop
           </button>
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={coachOn} onChange={(e) => setCoachOn(e.target.checked)} aria-pressed={coachOn} />
-            Coach
-          </label>
         </div>
       </header>
 
@@ -352,29 +388,55 @@ export default function StartInterviewClient({ id }: Props) {
         {error ? <span className="text-red-600">{error}</span> : statusMsg}
       </div>
 
+      {/* Main layout: persona left, chat right */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded border p-4">
-          <h2 className="font-medium mb-2">Persona</h2>
+          <h2 className="font-medium mb-2">Project & Persona</h2>
           <ul className="text-sm space-y-1">
-            <li>Age: {persona.age}</li>
-            <li>Personality: {persona.personality}</li>
-            <li>Tech: {persona.techFamiliarity}</li>
-            <li>Traits: {persona.traits.join(", ") || "none"}</li>
-            <li>Voice cfg: {persona.voiceConfigId}</li>
+            <li><span className="font-medium">Project:</span> {String(serverProject?.title ?? "Untitled")}</li>
+            {serverProject?.description ? (
+              <li className="text-gray-600">{String(serverProject.description)}</li>
+            ) : null}
+            <li className="mt-2 font-medium">Persona</li>
+            <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
+            <li>Personality: {String(serverPersona?.personality ?? fallbackPersona.personality)}</li>
+            <li>Tech: {String(serverPersona?.techfamiliarity ?? fallbackPersona.techFamiliarity)}</li>
+            <li>Traits: {Array.isArray(serverPersona?.painpoints) ? (serverPersona.painpoints as any[]).slice(0, 2).join(", ") : (fallbackPersona.traits.join(", ") || "none")}</li>
+            <li>Voice cfg: {fallbackPersona.voiceConfigId}</li>
           </ul>
         </div>
-        <div className="rounded border p-4 md:col-span-2">
-          <h2 className="font-medium mb-2">System Prompt</h2>
-          <pre className="text-xs whitespace-pre-wrap">{systemPrompt}</pre>
-          <h3 className="font-medium mt-3 mb-1 text-sm">Behavior hints</h3>
-          <ul className="list-disc list-inside text-xs">
-            {behaviorHints.map((h, i) => (
-              <li key={i}>{h}</li>
-            ))}
-          </ul>
+
+        <div className="rounded border p-0 md:col-span-2 flex flex-col">
+          <div id="chat-area" className="flex-1 overflow-y-auto p-4 space-y-3" aria-live="polite">
+            {turns.length === 0 ? (
+              <div className="text-xs text-gray-500">Say or type something to begin...</div>
+            ) : (
+              turns.map((t) => (
+                <div key={t.id} className={`flex ${t.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[75%] rounded px-3 py-2 text-sm shadow ${t.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"}`}>
+                    {t.text}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="border-t p-3 flex items-center gap-2">
+            <input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") sendText(); }}
+              placeholder="Type a message..."
+              className="flex-1 rounded border px-3 py-2 text-sm"
+              disabled={state !== "connected"}
+            />
+            <button className="rounded bg-gray-200 px-3 py-2 text-sm" onClick={sendText} disabled={state !== "connected" || text.trim() === ""}>
+              Send
+            </button>
+          </div>
         </div>
       </section>
 
+      {/* Meters */}
       <section className="grid grid-cols-2 gap-4">
         <div className="rounded border p-4">
           <h3 className="text-sm font-medium mb-2">Mic level</h3>
@@ -394,4 +456,3 @@ export default function StartInterviewClient({ id }: Props) {
     </div>
   );
 }
-
