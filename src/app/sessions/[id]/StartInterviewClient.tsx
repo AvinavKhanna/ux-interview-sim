@@ -479,8 +479,11 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
           const emos = extractEmotions(json);
           // Capture emotions and show user's text
           pushEmotions(emos);
-          if (content.trim() && !content.trim().startsWith('[[guidance]]'))
-            appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
+          const trimmed = content.trim();
+          if (trimmed && !trimmed.startsWith('[[guidance]]')) {
+            appendTurn({ id: crypto.randomUUID(), role: "user", text: trimmed, at: new Date().toISOString(), meta: { emotions: emos } });
+            triggerCoach(trimmed);
+          }
           return;
         }
         if (type === "conversation.message") {
@@ -722,10 +725,14 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         </div>
 
         <div className="rounded border p-0 md:col-span-2 flex flex-col">
-          <div className="border-b p-2">
-            <div className="text-xs text-gray-600 mb-1">Live emotions (last 8s)</div>
-            <EmotionStrip items={rollingTop3} compact />
-          </div>
+          {coachEnabled && coachHint ? (
+            <div className="border-b p-2">
+              <div className="text-xs text-gray-600 mb-1">Coach nudge</div>
+              <div className="text-[12px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                {coachHint}
+              </div>
+            </div>
+          ) : null}
           {process.env.NODE_ENV !== 'production' ? (
             <details className="px-4 py-2 text-xs text-gray-600 border-b">
               <summary className="cursor-pointer">Debug persona</summary>
@@ -784,6 +791,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
 
 
 
