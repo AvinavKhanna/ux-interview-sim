@@ -543,32 +543,19 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     setStatusMsg("Stopped.");
   }, [stopAll]);
 
-  // Pause persona playback while user talks; resume after sustained silence
-  const lastLoudRef = useRef<number>(0);
-  const lastQuietRef = useRef<number>(0);
-  const pausedByMicRef = useRef<boolean>(false);
+  // Pause persona playback while user talks; resume after short silence
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
-    const now = performance.now();
-    const high = 0.28; // speak threshold
-    const low = 0.12;  // silence threshold
-    const pauseHoldMs = 140; // must be loud this long to pause
-    const resumeHoldMs = 650; // must be quiet this long to resume
-
-    if (micLevel > high) lastLoudRef.current = now;
-    if (micLevel < low) lastQuietRef.current = now;
-
-    const shouldPause = now - lastLoudRef.current < pauseHoldMs;
-    const shouldResume = now - lastQuietRef.current > resumeHoldMs;
-
-    if (shouldPause && !pausedByMicRef.current) {
+    const threshold = 0.2;
+    let resumeTimer: number | null = null;
+    if (micLevel > threshold) {
       try { if (!el.paused) el.pause(); } catch {}
-      pausedByMicRef.current = true;
-    } else if (shouldResume && pausedByMicRef.current) {
-      try { if (el.paused && !el.ended) void el.play(); } catch {}
-      pausedByMicRef.current = false;
+      if (resumeTimer) { window.clearTimeout(resumeTimer); resumeTimer = null; }
+    } else {
+      resumeTimer = window.setTimeout(() => { try { if (el.paused && !el.ended) void el.play(); } catch {} }, 500);
     }
+    return () => { if (resumeTimer) window.clearTimeout(resumeTimer); };
   }, [micLevel]);
 
   const sendText = useCallback(() => {
@@ -723,6 +710,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
 
 
 
