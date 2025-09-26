@@ -1,5 +1,7 @@
-﻿export const dynamic = "force-dynamic";\nimport StartInterviewClient from "@/app/sessions/[id]/StartInterviewClient";
-import { supabaseServer } from "@/lib/supabase";\nimport { getPersonaSummary } from "@/lib/persona/getPersonaSummary";
+﻿export const dynamic = "force-dynamic";
+import StartInterviewClient from "@/app/sessions/[id]/StartInterviewClient";
+import { supabaseServer } from "@/lib/supabase";
+import { getPersonaSummary } from "@/lib/persona/getPersonaSummary";
 
 export default async function Page({
   params,
@@ -45,6 +47,7 @@ export default async function Page({
 
   return <StartInterviewClient id={id} initialPersona={initialPersona} initialProject={initialProject} personaSummary={personaSummary ?? undefined} />;
 }
+
 
 
 
