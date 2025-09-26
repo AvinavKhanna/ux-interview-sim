@@ -33,6 +33,15 @@ export default function StartInterviewClient({ id }: Props) {
   const [serverPrompt, setServerPrompt] = useState<string | null>(null);
   const [serverPersona, setServerPersona] = useState<any | null>(null);
   const [serverProject, setServerProject] = useState<any | null>(null);
+  // Fallback persona + prompt (used until server returns real data)
+  const fallbackPersona = useMemo(
+    () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
+    []
+  );
+  const fallbackPrompt = useMemo(
+    () => buildPrompt({ projectContext: "General UX research interview.", persona: fallbackPersona }).systemPrompt,
+    [fallbackPersona]
+  );
   // Compute a prompt locally from the server persona/project if the API
   // didn't return a ready-made prompt string.
     // Compute a prompt locally from the server persona/project if the API
@@ -69,15 +78,7 @@ export default function StartInterviewClient({ id }: Props) {
       return null;
     }
   }, [serverPersona, serverProject, fallbackPersona]);
-  // Fallback persona + prompt (used until server returns real data)
-  const fallbackPersona = useMemo(
-    () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
-    []
-  );
-  const fallbackPrompt = useMemo(
-    () => buildPrompt({ projectContext: "General UX research interview.", persona: fallbackPersona }).systemPrompt,
-    [fallbackPersona]
-  );
+  
 
   // audio + ws
   const audioRef = useRef<HTMLAudioElement | null>(null);
