@@ -454,7 +454,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         }
         if (type === "user_message") {
           const content = toText(json);
-          const emos = extractEmotions(json);\n          // Capture emotions and show user's text\n          pushEmotions(emos);
+          const emos = extractEmotions(json);
+          // Capture emotions and show user's text
+          pushEmotions(emos);
           if (content.trim() && !content.trim().startsWith('[[guidance]]'))
             appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
           return;
