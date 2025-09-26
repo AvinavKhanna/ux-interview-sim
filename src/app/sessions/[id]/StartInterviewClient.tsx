@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildPrompt, deriveInitialKnobs } from "@/lib/prompt/personaPrompt";
 import { extractEmotions } from "@/lib/emotions";
+import { scoreQuestion } from "@/lib/sensitivity";
+import { FactStore, extractFactsFromText, buildFactGuidance } from "@/lib/factStore";
 import EmotionStrip from "@/app/sessions/[id]/EmotionStrip";
 import {
   VoiceClient,
@@ -41,6 +43,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const [text, setText] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [emotionFeed, setEmotionFeed] = useState<{ at: number; items: EmotionPair[] }[]>([]);
+  const factStoreRef = useRef(new FactStore());
+  const turnsSeenRef = useRef(0);
   // Resolved from the token route (real selected persona/project)
   const [serverPrompt, setServerPrompt] = useState<string | null>(null);
   const [serverPersona, setServerPersona] = useState<any | null>(initialPersona ?? null);
@@ -54,7 +58,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     () => buildPrompt({ projectContext: "General UX research interview.", persona: fallbackPersona }).systemPrompt,
     [fallbackPersona]
   );  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
-    const rulesAppendix = useMemo(() => {
+  const rulesAppendix = useMemo(() => {
     try {
       const name = typeof serverPersona?.name === "string" && serverPersona.name.trim() ? serverPersona.name.trim() : "";
       const age = typeof serverPersona?.age === "number" && Number.isFinite(serverPersona.age) ? serverPersona.age : undefined;
@@ -64,6 +68,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       if (age !== undefined) lines.push("Age rule: You are " + age + " years old. Do not claim a different age.");
       if (proj) lines.push("Project rule: You are participating in a research interview for \"" + proj + "\". Do not substitute a different project.");
       lines.push("Consistency rule: Do not contradict the persona details above. If asked for your name/age/role, answer consistently.");
+      const rawPers = typeof serverPersona?.personality === 'string' ? serverPersona.personality.trim() : '';
+      if (rawPers) lines.push("Style rule: Your disposition is '" + rawPers + "'; reflect this in tone and brevity while staying professional.");
       return lines.join("\n");
     } catch { return ""; }
   }, [serverPersona, serverProject]);
@@ -79,7 +85,13 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
 
       const age = typeof serverPersona?.age === 'number' && Number.isFinite(serverPersona.age) ? serverPersona.age : fallbackPersona.age;
       const tech = (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
-      const personality = (serverPersona?.personality ?? fallbackPersona.personality) as any;
+      const normalizePers = (v: any): "warm" | "neutral" | "reserved" => {
+        const t = String(v ?? '').toLowerCase();
+        if (t.includes('warm') || t.includes('friendly') || t.includes('open')) return 'warm';
+        if (t.includes('reserved') || t.includes('quiet') || t.includes('guarded') || t.includes('impatient') || t.includes('angry')) return 'reserved';
+        return 'neutral';
+      };
+      const personality = normalizePers((serverPersona as any)?.personality ?? fallbackPersona.personality);
       const traits: string[] = [];
       let extraInstructions = '';
       if (serverPersona) {
@@ -94,7 +106,6 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         add(serverPersona.traits);
         if (typeof (serverPersona as any).notes === 'string' && (serverPersona as any).notes.trim()) {
           extraInstructions = (serverPersona as any).notes.trim();
-          traits.push(extraInstructions);
         }
         if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
       }
@@ -241,6 +252,14 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
 
   const appendTurn = useCallback((t: Turn) => {
     setTurns((prev) => [...prev, t]);
+    if (t.role === "user") {
+      turnsSeenRef.current += 1;
+      // Capture any facts stated explicitly by the user
+      try {
+        const facts = extractFactsFromText(t.text);
+        for (const f of facts) factStoreRef.current.set(f.key, f.value);
+      } catch {}
+    }
   }, []);
 
   const pushEmotions = useCallback((items: EmotionPair[] | undefined) => {
@@ -375,6 +394,20 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         if (type === "user_message") {
           const content = toText(json);
           const emos = extractEmotions(json);
+          // Send guidance for this turn based on sensitivity + facts
+          try {
+            const boundaries = fallbackPersona.boundaries ?? ["income","finances","religion","medical","exact address","school name","company name"];
+            const cautiousness = typeof fallbackPersona.cautiousness === 'number' ? fallbackPersona.cautiousness : 0.6;
+            const openness = typeof fallbackPersona.openness === 'number' ? fallbackPersona.openness : 0.5;
+            const trustWarmup = typeof fallbackPersona.trustWarmupTurns === 'number' ? fallbackPersona.trustWarmupTurns : 4;
+            const sens = scoreQuestion(content, { boundaries, cautiousness, openness, trustTurnsSeen: turnsSeenRef.current, trustWarmupTurns: trustWarmup });
+            const factGuide = buildFactGuidance(content, factStoreRef.current).guidance;
+            const stage = sens.level === 'high'
+              ? `[max_sentences=${sens.maxSentences}] [if you don't know specifics, say so and ask a clarifying question] [disclose_prob=${sens.discloseProb.toFixed(2)}]`
+              : `[max_sentences=${sens.maxSentences}] [disclose_prob=${sens.discloseProb.toFixed(2)}]`;
+            const preface = (factGuide ? factGuide + ' ' : '') + stage;
+            try { clientRef.current?.sendUserInput(preface); } catch {}
+          } catch {}
           pushEmotions(emos);
           if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
           return;
@@ -474,7 +507,27 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const sendText = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed || !clientRef.current || clientRef.current.readyState !== WebSocket.OPEN) return;
-    try { clientRef.current.sendUserInput(trimmed); } catch {}
+    // Sensitivity scoring and fact guidance
+    try {
+      const boundaries = fallbackPersona.boundaries ?? ["income","finances","religion","medical","exact address","school name","company name"];
+      const cautiousness = typeof fallbackPersona.cautiousness === 'number' ? fallbackPersona.cautiousness : 0.6;
+      const openness = typeof fallbackPersona.openness === 'number' ? fallbackPersona.openness : 0.5;
+      const trustWarmup = typeof fallbackPersona.trustWarmupTurns === 'number' ? fallbackPersona.trustWarmupTurns : 4;
+      const sens = scoreQuestion(trimmed, { boundaries, cautiousness, openness, trustTurnsSeen: turnsSeenRef.current, trustWarmupTurns: trustWarmup });
+      const { guidance } = buildFactGuidance(trimmed, factStoreRef.current);
+      const stage = sens.level === 'high'
+        ? `[max_sentences=${sens.maxSentences}] [if you don't know specifics, say so and ask a clarifying question] [disclose_prob=${sens.discloseProb.toFixed(2)}]`
+        : `[max_sentences=${sens.maxSentences}] [disclose_prob=${sens.discloseProb.toFixed(2)}]`;
+      const preface = (guidance ? guidance + ' ' : '') + stage;
+      const wait = Math.max(0, sens.hesitationMs | 0);
+      // Send guidance first after a short pause, then the user's text
+      window.setTimeout(() => {
+        try { clientRef.current?.sendUserInput(preface); } catch {}
+        try { clientRef.current?.sendUserInput(trimmed); } catch {}
+      }, wait);
+    } catch {
+      try { clientRef.current.sendUserInput(trimmed); } catch {}
+    }
     appendTurn({ id: crypto.randomUUID(), role: "user", text: trimmed, at: new Date().toISOString() });
     setText("");
   }, [appendTurn, text]);
@@ -523,7 +576,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             <li className="mt-2 font-medium">Persona</li>
             {serverPersona?.name ? (<li>Name: {String(serverPersona.name)}</li>) : null}
             <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
-            <li>Personality: {String(serverPersona?.personality ?? fallbackPersona.personality)}</li>
+            <li>Personality: {String((serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? fallbackPersona.personality)}</li>
             <li>Tech: {String(serverPersona?.techfamiliarity ?? fallbackPersona.techFamiliarity)}</li>
             {(() => {
               const traits: string[] = [];
@@ -603,6 +656,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
 
 
 
