@@ -68,7 +68,8 @@ export default function StartInterviewClient({ id }: Props) {
     } catch {
       return null;
     }
-  }, [serverPersona, serverProject, fallbackPersona]);/ Fallback persona + prompt (used until server returns real data)
+  }, [serverPersona, serverProject, fallbackPersona]);
+  // Fallback persona + prompt (used until server returns real data)
   const fallbackPersona = useMemo(
     () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
     []
