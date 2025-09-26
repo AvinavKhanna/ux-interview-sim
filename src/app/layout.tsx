@@ -6,7 +6,7 @@ import { OnboardingProvider } from '@/context/onboarding';
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="min-h-screen bg-gradient-to-br from-indigo-50 to-white text-slate-900">
+      <body suppressHydrationWarning className="min-h-screen bg-gradient-to-br from-indigo-50 to-white text-slate-900">
         <header className="border-b bg-white/70 backdrop-blur">
           <nav className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
             <Link href="/" className="font-semibold tracking-tight">UX Interview Simulator</Link>

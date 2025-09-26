@@ -274,7 +274,7 @@ export default function StartInterviewClient({ id }: Props) {
       setState("error");
       stopAll();
     }
-  }, [appendTurn, startMeters, startRecorder, stopAll, systemPrompt]);
+  }, [appendTurn, startMeters, startRecorder, stopAll, serverPrompt, fallbackPrompt]);
 
   const startInterview = useCallback(async () => {
     try {
