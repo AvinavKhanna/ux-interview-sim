@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildPrompt, deriveInitialKnobs } from "@/lib/prompt/personaPrompt";
+import type { PersonaSummary } from "@/types/persona";
 import { extractEmotions } from "@/lib/emotions";
 import { scoreQuestion } from "@/lib/sensitivity";
 import { FactStore, extractFactsFromText, buildFactGuidance } from "@/lib/factStore";
@@ -16,7 +17,7 @@ import {
   type JSONMessage,
 } from "@humeai/voice";
 
-type Props = { id: string; initialPersona?: any | null; initialProject?: any | null; };
+type Props = { id: string; initialPersona?: any | null; initialProject?: any | null; personaSummary?: PersonaSummary };
 
 type ConnectState = "idle" | "fetching-token" | "connecting" | "connected" | "error";
 
@@ -36,7 +37,7 @@ declare global {
   }
 }
 
-export default function StartInterviewClient({ id, initialPersona, initialProject }: Props) {
+export default function StartInterviewClient({ id, initialPersona, initialProject, personaSummary }: Props) {
   const [state, setState] = useState<ConnectState>("idle");
   const [statusMsg, setStatusMsg] = useState<string>("Ready.");
   const [error, setError] = useState<string | null>(null);
@@ -49,14 +50,15 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const [serverPrompt, setServerPrompt] = useState<string | null>(null);
   const [serverPersona, setServerPersona] = useState<any | null>(initialPersona ?? null);
   const [serverProject, setServerProject] = useState<any | null>(initialProject ?? null);
+  const [summary, setSummary] = useState<PersonaSummary | undefined>(personaSummary);
   // Fallback persona + prompt (used until server returns real data)
   const fallbackPersona = useMemo(
     () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
     []
   );
   const fallbackPrompt = useMemo(
-    () => buildPrompt({ projectContext: "General UX research interview.", persona: fallbackPersona }).systemPrompt,
-    [fallbackPersona]
+    () => buildPrompt({ projectContext: "General UX research interview.", persona: summary ?? fallbackPersona }).systemPrompt,
+    [fallbackPersona, summary]
   );  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
   const rulesAppendix = useMemo(() => {
     try {
@@ -83,18 +85,22 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       const projectDesc = typeof serverProject?.description === "string" && serverProject.description.trim() ? serverProject.description.trim() : "";
       const projectContext = [projectTitle, projectDesc].filter(Boolean).join(' - ') || 'General UX research interview.';
 
-      const age = typeof serverPersona?.age === 'number' && Number.isFinite(serverPersona.age) ? serverPersona.age : fallbackPersona.age;
-      const tech = (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
+      const age = (summary?.age ?? (typeof serverPersona?.age === 'number' ? serverPersona.age : undefined) ?? fallbackPersona.age);
+      const tech = (summary?.techFamiliarity ?? (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity) ?? fallbackPersona.techFamiliarity) as any;
       const normalizePers = (v: any): "warm" | "neutral" | "reserved" => {
         const t = String(v ?? '').toLowerCase();
         if (t.includes('warm') || t.includes('friendly') || t.includes('open')) return 'warm';
         if (t.includes('reserved') || t.includes('quiet') || t.includes('guarded') || t.includes('impatient') || t.includes('angry')) return 'reserved';
         return 'neutral';
       };
-      const personality = normalizePers((serverPersona as any)?.personality ?? fallbackPersona.personality);
+      const personality = normalizePers(summary?.personality ?? (serverPersona as any)?.personality ?? fallbackPersona.personality);
       const traits: string[] = [];
       let extraInstructions = '';
-      if (serverPersona) {
+      if (summary) {
+        if (summary.occupation) traits.push(summary.occupation);
+        if (Array.isArray(summary.painPoints)) traits.push(...summary.painPoints);
+        if (summary.extraInstructions) extraInstructions = summary.extraInstructions;
+      } else if (serverPersona) {
         const add = (v: any) => {
           if (!v) return;
           if (Array.isArray(v)) v.forEach((x) => { const s = String(x).trim(); if (s) traits.push(s); });
@@ -109,25 +115,25 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         }
         if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
       }
-      const knobs = deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality });
-      let { systemPrompt } = buildPrompt({ projectContext, persona: knobs });
-      const name = typeof serverPersona?.name === 'string' && serverPersona.name.trim() ? serverPersona.name.trim() : '';
+      const knobs = deriveInitialKnobs(summary ?? { age, traits, techFamiliarity: tech, personality });
+      let { systemPrompt } = buildPrompt({ projectContext, persona: summary ?? knobs });
+      const name = (summary?.name ?? (typeof serverPersona?.name === 'string' ? serverPersona.name : '')).toString().trim();
       if (name) {
         systemPrompt += `\nName rule: Your name is ${name}. Do not change it or invent other names.`;
       }
-      if (extraInstructions) {
-        systemPrompt += `\nAdditional instructions: ${extraInstructions}`;
+      if (extraInstructions || summary?.extraInstructions) {
+        systemPrompt += `\nAdditional instructions: ${summary?.extraInstructions ?? extraInstructions}`;
       }
       return systemPrompt;
     } catch {
       return null;
     }
-  }, [serverPersona, serverProject, fallbackPersona]);
+  }, [serverPersona, serverProject, fallbackPersona, summary]);
 
   // Derive a display personality string from multiple possible fields
   const displayPersonality = useMemo(() => {
     const pick = (): string | null => {
-      const fields = [
+      const fields = [summary?.personality, 
         (serverPersona as any)?.personality,
         (serverPersona as any)?.style,
         (serverPersona as any)?.tone,
@@ -522,7 +528,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ persona: { name: "Participant", age: 35, personality: "neutral", techFamiliarity: "medium" } }),
+        body: JSON.stringify({ personaSummary: summary ?? undefined }),
       }).catch(() => undefined);
 
       await connectVoice(token);
@@ -627,9 +633,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             <li className="mt-2 font-medium">Persona</li>
             {serverPersona?.name ? (<li>Name: {String(serverPersona.name)}</li>) : null}
             <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
-            <li>Personality: {String((serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? fallbackPersona.personality)}</li>
+            <li>Personality: {String(summary?.personality ?? (serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? fallbackPersona.personality)}</li>
             <li>Tech: {(() => {
-              const raw = (serverPersona as any)?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity;
+              const raw = summary?.techFamiliarity ?? (serverPersona as any)?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity;
               const t = String(raw ?? '').toLowerCase();
               if (t.includes('high')) return 'high';
               if (t.includes('medium')) return 'medium';
@@ -639,18 +645,23 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             {(() => {
               const traits: string[] = [];
               const add = (v: any) => { if (!v) return; if (Array.isArray(v)) v.forEach(x=>{ const s=String(x).trim(); if (s) traits.push(s);}); else { const s=String(v).trim(); if (s) traits.push(s);} };
-              if (serverPersona) {
+              if (summary) {
+                if (summary.occupation) traits.push(summary.occupation);
+                if (Array.isArray(summary.painPoints)) traits.push(...summary.painPoints);
+                if (summary.extraInstructions) traits.push(summary.extraInstructions);
+              } else if (serverPersona) {
                 add(serverPersona.traits);
                 add(serverPersona.goals);
                 add(serverPersona.frustrations);
                 add(serverPersona.painpoints);
                 if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
-                if (typeof (serverPersona as any).notes === 'string' && (serverPersona as any).notes.trim()) traits.push((serverPersona as any).notes.trim());
               }
               const text = (traits.length ? traits.slice(0, 6).join(', ') : (fallbackPersona.traits.join(', ') || 'none'));
               return <li>Traits: {text}</li>;
             })()}
-            {typeof (serverPersona as any)?.notes === 'string' && (serverPersona as any).notes.trim() ? (
+            {(summary?.extraInstructions && summary.extraInstructions.trim()) ? (
+              <li className="text-gray-600">Instructions: {summary.extraInstructions.trim()}</li>
+            ) : (typeof (serverPersona as any)?.notes === 'string' && (serverPersona as any).notes.trim()) ? (
               <li className="text-gray-600">Instructions: {(serverPersona as any).notes.trim()}</li>
             ) : null}
             <li>Voice cfg: {fallbackPersona.voiceConfigId}</li>
@@ -662,6 +673,12 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             <div className="text-xs text-gray-600 mb-1">Live emotions (last 8s)</div>
             <EmotionStrip items={rollingTop3} compact />
           </div>
+          {process.env.NODE_ENV !== 'production' ? (
+            <details className="px-4 py-2 text-xs text-gray-600 border-b">
+              <summary className="cursor-pointer">Debug persona</summary>
+              <pre className="whitespace-pre-wrap text-[11px] mt-2">{JSON.stringify(summary ?? {}, null, 2)}</pre>
+            </details>
+          ) : null}
           <div id="chat-area" className="h-[60vh] overflow-y-auto p-4 space-y-3" aria-live="polite">
             {turns.length === 0 ? (
               <div className="text-xs text-gray-500">Say or type something to begin...</div>
@@ -714,6 +731,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
+
+
 
 
 

@@ -53,13 +53,47 @@ function mapVoiceId(bucket: "youth" | "adult" | "senior", personality: Personali
   return env(key);
 }
 
-export function deriveInitialKnobs(input: {
+type InputA = {
   age: number;
   traits: string[] | string;
   techFamiliarity?: TechLevel;
   personality?: Personality;
   genderHint?: "male" | "female"; // optional hint if you store it elsewhere
-}): PersonaKnobs {
+};
+
+function isSummary(v: any): v is PersonaSummary {
+  return v && typeof v === "object" && ("techFamiliarity" in v || "personality" in v || "painPoints" in v);
+}
+
+export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs {
+  if (isSummary(input)) {
+    const techText = (input.techFamiliarity ?? "medium") as TechLevel;
+    const persText = String(input.personality ?? "neutral").toLowerCase();
+    const personality: Personality = persText.includes("warm") || persText.includes("friendly") ? "warm" :
+      persText.includes("reserved") || persText.includes("quiet") || persText.includes("guarded") || persText.includes("impatient") || persText.includes("angry") ? "reserved" : "neutral";
+    const traits: string[] = [];
+    if (input.occupation) traits.push(input.occupation);
+    if (Array.isArray(input.painPoints)) traits.push(...input.painPoints);
+    if (input.extraInstructions) traits.push(input.extraInstructions);
+    const age = typeof (input as any).age === "number" ? (input as any).age : 35;
+    const bucket = ageBucket(age);
+    const voiceConfigId = mapVoiceId(bucket, personality, undefined);
+    const speechRate = age >= 60 ? 0.9 : 1.0;
+    const turnTaking = { maxSeconds: 8, interruptOnVoice: true };
+    return {
+      age,
+      traits,
+      techFamiliarity: techText,
+      personality,
+      voiceConfigId,
+      speechRate,
+      turnTaking,
+      openness: 0.5,
+      cautiousness: 0.6,
+      boundaries: ["income","finances","religion","medical","exact address","school name","company name"],
+      trustWarmupTurns: 4,
+    };
+  }
   const tech = input.techFamiliarity ?? "medium";
   const pers = input.personality ?? "neutral";
   const bucket = ageBucket(input.age);
@@ -98,9 +132,15 @@ export function deriveInitialKnobs(input: {
 
 export function buildPrompt(args: {
   projectContext: string;
-  persona: PersonaKnobs;
+  persona: PersonaKnobs | PersonaSummary;
 }): { systemPrompt: string; behaviorHints: string[] } {
-  const { projectContext, persona } = args;
+  const { projectContext } = args;
+  const persona = isSummary(args.persona) ? deriveInitialKnobs(args.persona) : (args.persona as PersonaKnobs);
+  const personaContextParts: string[] = [];
+  const maybeSummary = isSummary(args.persona) ? (args.persona as PersonaSummary) : undefined;
+  if (maybeSummary?.occupation) personaContextParts.push(`Occupation: ${maybeSummary.occupation}`);
+  if (maybeSummary?.painPoints && maybeSummary.painPoints.length) personaContextParts.push(`Pain points: ${maybeSummary.painPoints.join(", ")}`);
+  if (maybeSummary?.extraInstructions) personaContextParts.push(`Extra instructions: ${maybeSummary.extraInstructions}`);
   const hints: string[] = [
     `turn_taking: enforced(${persona.turnTaking?.maxSeconds ?? 8}s, interruptOnVoice=${persona.turnTaking?.interruptOnVoice ?? true})`,
     `speech_rate: ${persona.speechRate ?? 1.0}`,
@@ -126,6 +166,10 @@ export function buildPrompt(args: {
     `You are role-playing a realistic interview participant for a UX research session.`,
     `Project context: ${projectContext}.`,
     `Persona: ${persona.age} y/o, personality=${persona.personality}, tech=${persona.techFamiliarity}.`,
+    ...(personaContextParts.length ? [
+      `Persona context:`,
+      ...personaContextParts.map((l) => `- ${l}`),
+    ] : []),
     `Behavior rules:`,
     `- Do NOT start the conversation. Wait for the interviewer to begin.`,
     `- Enforce turn-taking: stop speaking immediately if the interviewer starts talking.`,
@@ -134,6 +178,7 @@ export function buildPrompt(args: {
     `- If confused, ask for clarification rather than inventing details.`,
     `Anti-fabrication and sensitivity:`,
     `- Never invent specific facts (schools, companies, dates, addresses). If not known, say you're not sure and ask a clarifying question.`,
+    `- If a requested detail is not provided in Persona context, do not invent it; ask a clarifying question.`,
     `- For sensitive topics in your boundaries list, be brief/hesitant or defer unless rapport is established.`,
     `- Use light hesitation ("uh...", "I'm not sure") when a question is sensitive or when cautiousness is high.`,
     `- Increase openness gradually over the first ${typeof persona.trustWarmupTurns === "number" ? persona.trustWarmupTurns : 4} turns.`,
@@ -142,3 +187,4 @@ export function buildPrompt(args: {
   return { systemPrompt, behaviorHints: hints };
 }
 
+import type { PersonaSummary } from "@/types/persona";
