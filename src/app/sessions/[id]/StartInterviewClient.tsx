@@ -124,6 +124,35 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     }
   }, [serverPersona, serverProject, fallbackPersona]);
 
+  // Derive a display personality string from multiple possible fields
+  const displayPersonality = useMemo(() => {
+    const pick = (): string | null => {
+      const fields = [
+        (serverPersona as any)?.personality,
+        (serverPersona as any)?.style,
+        (serverPersona as any)?.tone,
+      ].filter(Boolean) as string[];
+      for (const v of fields) {
+        const s = String(v).trim();
+        if (s) return s;
+      }
+      const textPool: string[] = [];
+      const add = (v: any) => {
+        if (!v) return;
+        if (Array.isArray(v)) v.forEach((x) => { const s = String(x).toLowerCase(); if (s) textPool.push(s);});
+        else textPool.push(String(v).toLowerCase());
+      };
+      add((serverPersona as any)?.notes);
+      add((serverPersona as any)?.traits);
+      add((serverPersona as any)?.goals);
+      add((serverPersona as any)?.frustrations);
+      const keys = ["impatient","angry","guarded","friendly","warm","reserved","neutral","calm"];
+      for (const k of keys) if (textPool.some((t) => t.includes(k))) return k;
+      return null;
+    };
+    return pick();
+  }, [serverPersona]);
+
   // Knobs for turn-level sensitivity scoring derived from current persona
   const scoringKnobs = useMemo(() => {
     try {
@@ -514,19 +543,32 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     setStatusMsg("Stopped.");
   }, [stopAll]);
 
-  // Pause persona playback while user talks; resume after short silence
+  // Pause persona playback while user talks; resume after sustained silence
+  const lastLoudRef = useRef<number>(0);
+  const lastQuietRef = useRef<number>(0);
+  const pausedByMicRef = useRef<boolean>(false);
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
-    const threshold = 0.18;
-    let resumeTimer: number | null = null;
-    if (micLevel > threshold) {
+    const now = performance.now();
+    const high = 0.28; // speak threshold
+    const low = 0.12;  // silence threshold
+    const pauseHoldMs = 140; // must be loud this long to pause
+    const resumeHoldMs = 650; // must be quiet this long to resume
+
+    if (micLevel > high) lastLoudRef.current = now;
+    if (micLevel < low) lastQuietRef.current = now;
+
+    const shouldPause = now - lastLoudRef.current < pauseHoldMs;
+    const shouldResume = now - lastQuietRef.current > resumeHoldMs;
+
+    if (shouldPause && !pausedByMicRef.current) {
       try { if (!el.paused) el.pause(); } catch {}
-      if (resumeTimer) { window.clearTimeout(resumeTimer); resumeTimer = null; }
-    } else {
-      resumeTimer = window.setTimeout(() => { try { if (el.paused && !el.ended) void el.play(); } catch {} }, 400);
+      pausedByMicRef.current = true;
+    } else if (shouldResume && pausedByMicRef.current) {
+      try { if (el.paused && !el.ended) void el.play(); } catch {}
+      pausedByMicRef.current = false;
     }
-    return () => { if (resumeTimer) window.clearTimeout(resumeTimer); };
   }, [micLevel]);
 
   const sendText = useCallback(() => {
@@ -681,6 +723,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
 
 
 
