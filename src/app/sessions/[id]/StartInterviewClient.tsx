@@ -405,11 +405,12 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             const stage = sens.level === 'high'
               ? `[max_sentences=${sens.maxSentences}] [if you don't know specifics, say so and ask a clarifying question] [disclose_prob=${sens.discloseProb.toFixed(2)}]`
               : `[max_sentences=${sens.maxSentences}] [disclose_prob=${sens.discloseProb.toFixed(2)}]`;
-            const preface = (factGuide ? factGuide + ' ' : '') + stage;
+            const preface = '[[guidance]] ' + ((factGuide ? factGuide + ' ' : '') + stage);
             try { clientRef.current?.sendUserInput(preface); } catch {}
           } catch {}
           pushEmotions(emos);
-          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
+          if (content.trim() && !content.trim().startsWith('[[guidance]]'))
+            appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
           return;
         }
         if (type === "conversation.message") {
@@ -418,7 +419,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
           const role: "user" | "persona" = roleRaw.includes("assistant") || roleRaw.includes("persona") ? "persona" : "user";
           const emos = extractEmotions(json);
           pushEmotions(emos);
-          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role, text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
+          const trimmed = content.trim();
+          if (trimmed && !(role === 'user' && trimmed.startsWith('[[guidance]]')))
+            appendTurn({ id: crypto.randomUUID(), role, text: trimmed, at: new Date().toISOString(), meta: { emotions: emos } });
           return;
         }
       });
@@ -518,7 +521,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       const stage = sens.level === 'high'
         ? `[max_sentences=${sens.maxSentences}] [if you don't know specifics, say so and ask a clarifying question] [disclose_prob=${sens.discloseProb.toFixed(2)}]`
         : `[max_sentences=${sens.maxSentences}] [disclose_prob=${sens.discloseProb.toFixed(2)}]`;
-      const preface = (guidance ? guidance + ' ' : '') + stage;
+      const preface = '[[guidance]] ' + ((guidance ? guidance + ' ' : '') + stage);
       const wait = Math.max(0, sens.hesitationMs | 0);
       // Send guidance first after a short pause, then the user's text
       window.setTimeout(() => {
