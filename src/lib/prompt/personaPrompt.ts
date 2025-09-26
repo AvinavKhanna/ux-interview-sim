@@ -9,6 +9,11 @@ export type PersonaKnobs = {
   voiceConfigId: string;
   speechRate?: number; // <1 slower, >1 faster
   turnTaking?: { maxSeconds: number; interruptOnVoice: boolean };
+  // New adjustable knobs (defaults preserve prior behavior)
+  openness?: number; // 0..1
+  cautiousness?: number; // 0..1
+  boundaries?: string[];
+  trustWarmupTurns?: number;
 };
 
 // Use robust splitting without fragile inline regex literals.
@@ -62,6 +67,19 @@ export function deriveInitialKnobs(input: {
   const speechRate = input.age >= 60 ? 0.9 : 1.0;
   const turnTaking = { maxSeconds: 8, interruptOnVoice: true };
   const traits = asList(input.traits);
+  // Defaults for new knobs
+  const openness = 0.5;
+  const cautiousness = 0.6;
+  const boundaries = [
+    "income",
+    "finances",
+    "religion",
+    "medical",
+    "exact address",
+    "school name",
+    "company name",
+  ];
+  const trustWarmupTurns = 4;
 
   return {
     age: input.age,
@@ -71,6 +89,10 @@ export function deriveInitialKnobs(input: {
     voiceConfigId,
     speechRate,
     turnTaking,
+    openness,
+    cautiousness,
+    boundaries,
+    trustWarmupTurns,
   };
 }
 
@@ -85,6 +107,19 @@ export function buildPrompt(args: {
     `tech_familiarity: ${persona.techFamiliarity}`,
     `personality: ${persona.personality}`,
     `traits: ${persona.traits.join(", ") || "none"}`,
+    `openness: ${typeof persona.openness === "number" ? persona.openness : 0.5}`,
+    `cautiousness: ${typeof persona.cautiousness === "number" ? persona.cautiousness : 0.6}`,
+    `boundaries: ${(persona.boundaries && persona.boundaries.length ? persona.boundaries : [
+      "income",
+      "finances",
+      "religion",
+      "medical",
+      "exact address",
+      "school name",
+      "company name",
+    ]).join(", ")}`,
+    `trust_warmup_turns: ${typeof persona.trustWarmupTurns === "number" ? persona.trustWarmupTurns : 4}`,
+    `anti_fabrication: strict`,
   ];
 
   const systemPrompt = [
@@ -97,6 +132,11 @@ export function buildPrompt(args: {
     `- Speak naturally with brief hesitations and emotions appropriate for the personality.`,
     `- Keep answers ~2-5 sentences unless the interviewer probes for more.`,
     `- If confused, ask for clarification rather than inventing details.`,
+    `Anti-fabrication and sensitivity:`,
+    `- Never invent specific facts (schools, companies, dates, addresses). If not known, say you're not sure and ask a clarifying question.`,
+    `- For sensitive topics in your boundaries list, be brief/hesitant or defer unless rapport is established.`,
+    `- Use light hesitation ("uh...", "I'm not sure") when a question is sensitive or when cautiousness is high.`,
+    `- Increase openness gradually over the first ${typeof persona.trustWarmupTurns === "number" ? persona.trustWarmupTurns : 4} turns.`,
   ].join("\n");
 
   return { systemPrompt, behaviorHints: hints };

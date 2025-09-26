@@ -81,6 +81,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       const tech = (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
       const personality = (serverPersona?.personality ?? fallbackPersona.personality) as any;
       const traits: string[] = [];
+      let extraInstructions = '';
       if (serverPersona) {
         const add = (v: any) => {
           if (!v) return;
@@ -90,6 +91,11 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         add(serverPersona.painpoints);
         add(serverPersona.goals);
         add(serverPersona.frustrations);
+        add(serverPersona.traits);
+        if (typeof (serverPersona as any).notes === 'string' && (serverPersona as any).notes.trim()) {
+          extraInstructions = (serverPersona as any).notes.trim();
+          traits.push(extraInstructions);
+        }
         if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
       }
       const knobs = deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality });
@@ -97,6 +103,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       const name = typeof serverPersona?.name === 'string' && serverPersona.name.trim() ? serverPersona.name.trim() : '';
       if (name) {
         systemPrompt += `\nName rule: Your name is ${name}. Do not change it or invent other names.`;
+      }
+      if (extraInstructions) {
+        systemPrompt += `\nAdditional instructions: ${extraInstructions}`;
       }
       return systemPrompt;
     } catch {
@@ -516,7 +525,23 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
             <li>Personality: {String(serverPersona?.personality ?? fallbackPersona.personality)}</li>
             <li>Tech: {String(serverPersona?.techfamiliarity ?? fallbackPersona.techFamiliarity)}</li>
-            <li>Traits: {Array.isArray(serverPersona?.painpoints) ? (serverPersona.painpoints as any[]).slice(0, 2).join(", ") : (fallbackPersona.traits.join(", ") || "none")}</li>
+            {(() => {
+              const traits: string[] = [];
+              const add = (v: any) => { if (!v) return; if (Array.isArray(v)) v.forEach(x=>{ const s=String(x).trim(); if (s) traits.push(s);}); else { const s=String(v).trim(); if (s) traits.push(s);} };
+              if (serverPersona) {
+                add(serverPersona.traits);
+                add(serverPersona.goals);
+                add(serverPersona.frustrations);
+                add(serverPersona.painpoints);
+                if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
+                if (typeof (serverPersona as any).notes === 'string' && (serverPersona as any).notes.trim()) traits.push((serverPersona as any).notes.trim());
+              }
+              const text = (traits.length ? traits.slice(0, 6).join(', ') : (fallbackPersona.traits.join(', ') || 'none'));
+              return <li>Traits: {text}</li>;
+            })()}
+            {typeof (serverPersona as any)?.notes === 'string' && (serverPersona as any).notes.trim() ? (
+              <li className="text-gray-600">Instructions: {(serverPersona as any).notes.trim()}</li>
+            ) : null}
             <li>Voice cfg: {fallbackPersona.voiceConfigId}</li>
           </ul>
         </div>
