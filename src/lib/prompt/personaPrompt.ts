@@ -1,4 +1,5 @@
-﻿export type TechLevel = "low" | "medium" | "high";
+﻿import type { PersonaSummary } from "@/types/persona";
+export type TechLevel = "low" | "medium" | "high";
 export type Personality = "warm" | "neutral" | "reserved";
 
 export type PersonaKnobs = {
@@ -135,7 +136,7 @@ export function buildPrompt(args: {
   persona: PersonaKnobs | PersonaSummary;
 }): { systemPrompt: string; behaviorHints: string[] } {
   const { projectContext } = args;
-  const persona = isSummary(args.persona) ? deriveInitialKnobs(args.persona) : (args.persona as PersonaKnobs);
+  const persona = (() => { const p: any = args.persona as any; if (p && Array.isArray(p.traits) && typeof p.age === 'number' && p.techFamiliarity) return p as PersonaKnobs; if (isSummary(p)) return deriveInitialKnobs(p); try { const age = typeof p?.age === 'number' ? p.age : 35; const traits = Array.isArray(p?.traits) ? p.traits : asList(p?.traits ?? []); const tech = (p?.techFamiliarity ?? 'medium') as TechLevel; const per = (p?.personality ?? 'neutral') as Personality; return deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality: per }); } catch { return deriveInitialKnobs({ age: 35, traits: [], techFamiliarity: 'medium', personality: 'neutral' }); } })();
   const personaContextParts: string[] = [];
   const maybeSummary = isSummary(args.persona) ? (args.persona as PersonaSummary) : undefined;
   if (maybeSummary?.occupation) personaContextParts.push(`Occupation: ${maybeSummary.occupation}`);
@@ -146,7 +147,7 @@ export function buildPrompt(args: {
     `speech_rate: ${persona.speechRate ?? 1.0}`,
     `tech_familiarity: ${persona.techFamiliarity}`,
     `personality: ${persona.personality}`,
-    `traits: ${persona.traits.join(", ") || "none"}`,
+    `traits: ${Array.isArray(persona.traits) ? (persona.traits.join(", ") || "none") : "none"}`,
     `openness: ${typeof persona.openness === "number" ? persona.openness : 0.5}`,
     `cautiousness: ${typeof persona.cautiousness === "number" ? persona.cautiousness : 0.6}`,
     `boundaries: ${(persona.boundaries && persona.boundaries.length ? persona.boundaries : [
@@ -187,4 +188,4 @@ export function buildPrompt(args: {
   return { systemPrompt, behaviorHints: hints };
 }
 
-import type { PersonaSummary } from "@/types/persona";
+
