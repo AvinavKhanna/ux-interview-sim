@@ -67,6 +67,34 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     [fallbackPersona, summary]
   );  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
 
+  // Fetch Summary persona as single source of truth and override local state
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/persona`, { cache: 'no-store' });
+        const j = res.ok ? await res.json() : null;
+        if (!alive) return;
+        if (j?.personaSummary) {
+          setSummary(j.personaSummary);
+          if (process.env.NODE_ENV !== 'production') {
+            // eslint-disable-next-line no-console
+            console.log('PersonaSummaryFetched', j.personaSummary);
+          }
+        } else if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.warn('PersonaSummary API returned empty payload');
+        }
+      } catch (e) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.warn('PersonaSummary fetch failed', e);
+        }
+      }
+    })();
+    return () => { alive = false; };
+  }, [id]);
+
   // Dev-only: expose and warn if key fields are missing
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') return;
@@ -437,6 +465,10 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         setStatusMsg("Connected. Waiting for your first question.");
         setError(null);
         try {
+          if (process.env.NODE_ENV !== 'production') {
+            // eslint-disable-next-line no-console
+            console.log('RuntimePersonaForPrompt', summary);
+          }
           const base = ((summary ? computedPrompt : serverPrompt) ?? fallbackPrompt) || "";
           const finalPrompt = rulesAppendix ? base + "\n" + rulesAppendix : base;
           // Enable prosody/emotion signals if supported by the runtime.
@@ -857,6 +889,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
 
 
 
