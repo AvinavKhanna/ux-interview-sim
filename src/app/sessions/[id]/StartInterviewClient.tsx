@@ -12,7 +12,7 @@ import {
   type JSONMessage,
 } from "@humeai/voice";
 
-type Props = { id: string };
+type Props = { id: string; initialPersona?: any | null; initialProject?: any | null; };
 
 type ConnectState = "idle" | "fetching-token" | "connecting" | "connected" | "error";
 
@@ -23,7 +23,7 @@ type Turn = {
   at: string;
 };
 
-export default function StartInterviewClient({ id }: Props) {
+export default function StartInterviewClient({ id, initialPersona, initialProject }: Props) {
   const [state, setState] = useState<ConnectState>("idle");
   const [statusMsg, setStatusMsg] = useState<string>("Ready.");
   const [error, setError] = useState<string | null>(null);
@@ -31,8 +31,8 @@ export default function StartInterviewClient({ id }: Props) {
   const [turns, setTurns] = useState<Turn[]>([]);
   // Resolved from the token route (real selected persona/project)
   const [serverPrompt, setServerPrompt] = useState<string | null>(null);
-  const [serverPersona, setServerPersona] = useState<any | null>(null);
-  const [serverProject, setServerProject] = useState<any | null>(null);
+  const [serverPersona, setServerPersona] = useState<any | null>(initialPersona ?? null);
+  const [serverProject, setServerProject] = useState<any | null>(initialProject ?? null);
   // Fallback persona + prompt (used until server returns real data)
   const fallbackPersona = useMemo(
     () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
@@ -41,7 +41,20 @@ export default function StartInterviewClient({ id }: Props) {
   const fallbackPrompt = useMemo(
     () => buildPrompt({ projectContext: "General UX research interview.", persona: fallbackPersona }).systemPrompt,
     [fallbackPersona]
-  );
+  );  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
+    const rulesAppendix = useMemo(() => {
+    try {
+      const name = typeof serverPersona?.name === "string" && serverPersona.name.trim() ? serverPersona.name.trim() : "";
+      const age = typeof serverPersona?.age === "number" && Number.isFinite(serverPersona.age) ? serverPersona.age : undefined;
+      const proj = typeof serverProject?.title === "string" && serverProject.title.trim() ? serverProject.title.trim() : "";
+      const lines: string[] = [];
+      if (name) lines.push("Name rule: Your name is " + name + ". Do not change it or invent other names.");
+      if (age !== undefined) lines.push("Age rule: You are " + age + " years old. Do not claim a different age.");
+      if (proj) lines.push("Project rule: You are participating in a research interview for \"" + proj + "\". Do not substitute a different project.");
+      lines.push("Consistency rule: Do not contradict the persona details above. If asked for your name/age/role, answer consistently.");
+      return lines.join("\n");
+    } catch { return ""; }
+  }, [serverPersona, serverProject]);
   // Compute a prompt locally from the server persona/project if the API
   // didn't return a ready-made prompt string.
     // Compute a prompt locally from the server persona/project if the API
@@ -242,7 +255,11 @@ export default function StartInterviewClient({ id }: Props) {
         setState("connected");
         setStatusMsg("Connected. Waiting for your first question.");
         setError(null);
-        try { client.sendSessionSettings?.({ systemPrompt: serverPrompt ?? computedPrompt ?? fallbackPrompt }); } catch {}
+        try {
+          const base = (serverPrompt ?? computedPrompt ?? fallbackPrompt) || "";
+          const finalPrompt = rulesAppendix ? base + "\n" + rulesAppendix : base;
+          client.sendSessionSettings?.({ systemPrompt: finalPrompt });
+        } catch {}
         startRecorder();
       });
 
@@ -493,4 +510,7 @@ export default function StartInterviewClient({ id }: Props) {
     </div>
   );
 }
+
+
+
 
