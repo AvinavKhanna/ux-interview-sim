@@ -535,7 +535,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
                   <div className={`max-w-[75%] rounded px-3 py-2 text-sm shadow ${t.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"}`}>
                     <div>{t.text}</div>
                     {t.meta?.emotions && t.meta.emotions.length ? (
-                      <EmotionStrip items={t.meta.emotions} />
+                      <EmotionStrip items={t.meta.emotions} onDark={t.role === "user"} />
                     ) : null}
                   </div>
                 </div>
@@ -578,6 +578,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
 
 
 
