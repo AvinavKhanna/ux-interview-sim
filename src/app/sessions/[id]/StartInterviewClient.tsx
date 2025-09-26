@@ -33,6 +33,43 @@ export default function StartInterviewClient({ id }: Props) {
   const [serverPrompt, setServerPrompt] = useState<string | null>(null);
   const [serverPersona, setServerPersona] = useState<any | null>(null);
   const [serverProject, setServerProject] = useState<any | null>(null);
+  // Compute a prompt locally from the server persona/project if the API
+  // didn't return a ready-made prompt string.
+  const computedPrompt = useMemo(() => {
+    try {
+      // Build project context line
+      const projectTitle = typeof serverProject?.title === "string" && serverProject.title.trim() ? serverProject.title.trim() : "General UX research interview.";
+      const projectDesc = typeof serverProject?.description === "string" && serverProject.description.trim() ? serverProject.description.trim() : "";
+      const projectContext = [projectTitle, projectDesc].filter(Boolean).join(" — ") || "General UX research interview.";
+
+      // Map persona fields into knobs
+      const age = typeof serverPersona?.age === "number" && Number.isFinite(serverPersona.age) ? serverPersona.age : fallbackPersona.age;
+      const tech = (serverPersona?.techfamiliarity ?? serverPersona?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
+      const personality = (serverPersona?.personality ?? fallbackPersona.personality) as any;
+      const traits: string[] = [];
+      if (serverPersona) {
+        const add = (v: any) => {
+          if (!v) return;
+          if (Array.isArray(v)) v.forEach((x) => { const s = String(x).trim(); if (s) traits.push(s); });
+          else { const s = String(v).trim(); if (s) traits.push(s); }
+        };
+        add(serverPersona.painpoints);
+        add(serverPersona.goals);
+        add(serverPersona.frustrations);
+        if (typeof serverPersona.occupation === "string" && serverPersona.occupation.trim()) traits.push(serverPersona.occupation.trim());
+      }
+      const knobs = deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality });
+      let { systemPrompt } = buildPrompt({ projectContext, persona: knobs });
+      // If a name exists, pin it explicitly to avoid model defaults like "Sarah".
+      const name = typeof serverPersona?.name === "string" && serverPersona.name.trim() ? serverPersona.name.trim() : "";
+      if (name) {
+        systemPrompt += `\nName rule: Your name is ${name}. Do not change it or invent other names.`;
+      }
+      return systemPrompt;
+    } catch {
+      return null;
+    }
+  }, [serverPersona, serverProject, fallbackPersona]);
 
   // Fallback persona + prompt (used until server returns real data)
   const fallbackPersona = useMemo(
@@ -206,7 +243,7 @@ export default function StartInterviewClient({ id }: Props) {
         setState("connected");
         setStatusMsg("Connected. Waiting for your first question.");
         setError(null);
-        try { client.sendSessionSettings?.({ systemPrompt: serverPrompt ?? fallbackPrompt }); } catch {}
+        try { client.sendSessionSettings?.({ systemPrompt: serverPrompt ?? computedPrompt ?? fallbackPrompt }); } catch {}
         startRecorder();
       });
 
@@ -398,6 +435,7 @@ export default function StartInterviewClient({ id }: Props) {
               <li className="text-gray-600">{String(serverProject.description)}</li>
             ) : null}
             <li className="mt-2 font-medium">Persona</li>
+            {serverPersona?.name ? (<li>Name: {String(serverPersona.name)}</li>) : null}
             <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
             <li>Personality: {String(serverPersona?.personality ?? fallbackPersona.personality)}</li>
             <li>Tech: {String(serverPersona?.techfamiliarity ?? fallbackPersona.techFamiliarity)}</li>
