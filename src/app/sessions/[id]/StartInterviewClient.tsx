@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildPrompt, deriveInitialKnobs } from "@/lib/prompt/personaPrompt";
@@ -35,16 +35,16 @@ export default function StartInterviewClient({ id }: Props) {
   const [serverProject, setServerProject] = useState<any | null>(null);
   // Compute a prompt locally from the server persona/project if the API
   // didn't return a ready-made prompt string.
+    // Compute a prompt locally from the server persona/project if the API
+  // didn't return a ready-made prompt string.
   const computedPrompt = useMemo(() => {
     try {
-      // Build project context line
       const projectTitle = typeof serverProject?.title === "string" && serverProject.title.trim() ? serverProject.title.trim() : "General UX research interview.";
       const projectDesc = typeof serverProject?.description === "string" && serverProject.description.trim() ? serverProject.description.trim() : "";
-      const projectContext = [projectTitle, projectDesc].filter(Boolean).join(" — ") || "General UX research interview.";
+      const projectContext = [projectTitle, projectDesc].filter(Boolean).join(' - ') || 'General UX research interview.';
 
-      // Map persona fields into knobs
-      const age = typeof serverPersona?.age === "number" && Number.isFinite(serverPersona.age) ? serverPersona.age : fallbackPersona.age;
-      const tech = (serverPersona?.techfamiliarity ?? serverPersona?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
+      const age = typeof serverPersona?.age === 'number' && Number.isFinite(serverPersona.age) ? serverPersona.age : fallbackPersona.age;
+      const tech = (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
       const personality = (serverPersona?.personality ?? fallbackPersona.personality) as any;
       const traits: string[] = [];
       if (serverPersona) {
@@ -56,12 +56,11 @@ export default function StartInterviewClient({ id }: Props) {
         add(serverPersona.painpoints);
         add(serverPersona.goals);
         add(serverPersona.frustrations);
-        if (typeof serverPersona.occupation === "string" && serverPersona.occupation.trim()) traits.push(serverPersona.occupation.trim());
+        if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
       }
       const knobs = deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality });
       let { systemPrompt } = buildPrompt({ projectContext, persona: knobs });
-      // If a name exists, pin it explicitly to avoid model defaults like "Sarah".
-      const name = typeof serverPersona?.name === "string" && serverPersona.name.trim() ? serverPersona.name.trim() : "";
+      const name = typeof serverPersona?.name === 'string' && serverPersona.name.trim() ? serverPersona.name.trim() : '';
       if (name) {
         systemPrompt += `\nName rule: Your name is ${name}. Do not change it or invent other names.`;
       }
@@ -69,9 +68,7 @@ export default function StartInterviewClient({ id }: Props) {
     } catch {
       return null;
     }
-  }, [serverPersona, serverProject, fallbackPersona]);
-
-  // Fallback persona + prompt (used until server returns real data)
+  }, [serverPersona, serverProject, fallbackPersona]);/ Fallback persona + prompt (used until server returns real data)
   const fallbackPersona = useMemo(
     () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
     []
@@ -494,3 +491,4 @@ export default function StartInterviewClient({ id }: Props) {
     </div>
   );
 }
+
