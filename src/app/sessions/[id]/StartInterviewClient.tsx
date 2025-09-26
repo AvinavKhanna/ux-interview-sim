@@ -524,12 +524,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       }
       if (!token) throw new Error("Token missing in response");
 
-      // Ensure there is a session row (non-blocking if it already exists)
-      await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ personaSummary: summary ?? undefined }),
-      }).catch(() => undefined);
+      // Session rows already exist for this page path (/sessions/[id]).
+      // Avoid creating a new one here to prevent 500s if API expects project/persona ids.
 
       await connectVoice(token);
     } catch (e: any) {
