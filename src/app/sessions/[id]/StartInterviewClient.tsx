@@ -7,6 +7,7 @@ import { extractEmotions } from "@/lib/emotions";
 import { scoreQuestion } from "@/lib/sensitivity";
 import { FactStore, extractFactsFromText, buildFactGuidance } from "@/lib/factStore";
 import EmotionStrip from "@/app/sessions/[id]/EmotionStrip";
+import type { CoachResponse, CoachSample } from "@/types/coach";
 import {
   VoiceClient,
   createSocketConfig,
@@ -44,6 +45,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const [text, setText] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [emotionFeed, setEmotionFeed] = useState<{ at: number; items: EmotionPair[] }[]>([]);
+  const [coachEnabled, setCoachEnabled] = useState<boolean>(false);
+  const [coachHint, setCoachHint] = useState<string | null>(null);
+  const lastCoachAtRef = useRef<number>(0);
   const factStoreRef = useRef(new FactStore());
   const turnsSeenRef = useRef(0);
   // Resolved from the token route (real selected persona/project)
@@ -594,6 +598,38 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       try { clientRef.current.sendUserInput(trimmed); } catch {}
     }
     appendTurn({ id: crypto.randomUUID(), role: "user", text: trimmed, at: new Date().toISOString() });
+    // Live coach request (heuristic) if enabled and not a greeting
+    try {
+      if (coachEnabled) {
+        const now = Date.now();
+        if (now - lastCoachAtRef.current > 7000) {
+          const words = trimmed.split(/\s+/).filter(Boolean);
+          const greet = ["hi","hello","hey","how are you","good morning","good afternoon"]
+            .some((p) => trimmed.toLowerCase().startsWith(p));
+          if (!greet && words.length >= 3) {
+            lastCoachAtRef.current = now;
+            const lastUserTurns = turns.filter((t) => t.role === "user").map((t) => t.text).slice(-3);
+            const lastAssistTurns = turns.filter((t) => t.role === "persona").map((t) => t.text).slice(-3);
+            const sample: CoachSample = { question: trimmed, lastUserTurns, lastAssistTurns, personaKnobs: scoringKnobs as any };
+            fetch("/api/coach", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-session-id": id },
+              cache: "no-store",
+              body: JSON.stringify(sample),
+            })
+              .then((r) => (r.ok ? r.json() : null))
+              .then((j: CoachResponse | null) => {
+                const hint = j?.hints?.[0]?.text;
+                if (hint) {
+                  setCoachHint(hint);
+                  window.setTimeout(() => setCoachHint(null), 9000);
+                }
+              })
+              .catch(() => undefined);
+          }
+        }
+      }
+    } catch {}
     setText("");
   }, [appendTurn, text]);
 
@@ -605,6 +641,15 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
           <p className="text-sm text-gray-500">Session ID: {id}</p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className={"px-2 py-1 rounded border text-xs " + (coachEnabled ? "bg-amber-100 border-amber-300" : "bg-white border-gray-300")}
+            aria-pressed={coachEnabled}
+            onClick={() => setCoachEnabled((v) => !v)}
+            title="Live coach (heuristic)"
+          >
+            Coach: {coachEnabled ? "ON" : "OFF"}
+          </button>
           <button
             type="button"
             className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-60"
@@ -739,6 +784,12 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
+
+
+
+
+
 
 
 
