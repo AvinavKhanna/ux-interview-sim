@@ -60,6 +60,18 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     () => buildPrompt({ projectContext: "General UX research interview.", persona: summary ?? fallbackPersona }).systemPrompt,
     [fallbackPersona, summary]
   );  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
+
+  // Dev-only: expose and warn if key fields are missing
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    try { (window as any).__persona = summary ?? null; } catch {}
+    if (!summary) return;
+    const missing: string[] = [];
+    if (!summary.personality || !summary.personality.trim()) missing.push('personality');
+    if (!summary.techFamiliarity) missing.push('techFamiliarity');
+    if (!Array.isArray(summary.painPoints) || summary.painPoints.length === 0) missing.push('painPoints');
+    if (missing.length) console.warn('PersonaSummary missing fields:', missing.join(', '));
+  }, [summary]);
   const rulesAppendix = useMemo(() => {
     try {
       const name = typeof serverPersona?.name === "string" && serverPersona.name.trim() ? serverPersona.name.trim() : "";
@@ -385,7 +397,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         setStatusMsg("Connected. Waiting for your first question.");
         setError(null);
         try {
-          const base = (serverPrompt ?? computedPrompt ?? fallbackPrompt) || "";
+          const base = ((summary ? computedPrompt : serverPrompt) ?? fallbackPrompt) || "";
           const finalPrompt = rulesAppendix ? base + "\n" + rulesAppendix : base;
           // Enable prosody/emotion signals if supported by the runtime.
           // The shape below is tolerant; unknown keys are ignored by the SDK.
@@ -627,7 +639,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
               <li className="text-gray-600">{String(serverProject.description)}</li>
             ) : null}
             <li className="mt-2 font-medium">Persona</li>
-            {serverPersona?.name ? (<li>Name: {String(serverPersona.name)}</li>) : null}
+            {serverPersona?.name ? (<li>Name: {String(summary?.name ?? serverPersona?.name ?? "Participant")}</li>) : null}
             <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
             <li>Personality: {String(summary?.personality ?? (serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? fallbackPersona.personality)}</li>
             <li>Tech: {(() => {
@@ -727,6 +739,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
+
 
 
 

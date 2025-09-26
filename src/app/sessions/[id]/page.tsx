@@ -1,6 +1,5 @@
-﻿import StartInterviewClient from "@/app/sessions/[id]/StartInterviewClient";
-import { supabaseServer } from "@/lib/supabase";
-import { getPersonaSummary } from "@/lib/persona/getPersonaSummary";
+﻿export const dynamic = "force-dynamic";\nimport StartInterviewClient from "@/app/sessions/[id]/StartInterviewClient";
+import { supabaseServer } from "@/lib/supabase";\nimport { getPersonaSummary } from "@/lib/persona/getPersonaSummary";
 
 export default async function Page({
   params,
@@ -32,7 +31,7 @@ export default async function Page({
         .eq("id", String(session.persona_id))
         .single();
       initialPersona = persona ?? null;
-      try { personaSummary = await getPersonaSummary(String(session.persona_id)); } catch {}
+      try { personaSummary = await getPersonaSummary(id); } catch {}
     }
     if (session?.project_id) {
       const { data: project } = await sb
@@ -46,6 +45,7 @@ export default async function Page({
 
   return <StartInterviewClient id={id} initialPersona={initialPersona} initialProject={initialProject} personaSummary={personaSummary ?? undefined} />;
 }
+
 
 
 
