@@ -1,5 +1,6 @@
 ﻿import StartInterviewClient from "@/app/sessions/[id]/StartInterviewClient";
-import { supabaseServer } from "@/lib/supabase";\nimport { getPersonaSummary } from "@/lib/persona/getPersonaSummary";
+import { supabaseServer } from "@/lib/supabase";
+import { getPersonaSummary } from "@/lib/persona/getPersonaSummary";
 
 export default async function Page({
   params,
@@ -16,7 +17,8 @@ export default async function Page({
   // correct summary before the user clicks Start interview.
   const sb = supabaseServer();
   let initialPersona: any | null = null;
-  let initialProject: any | null = null;\n  let personaSummary: any | null = null;
+  let initialProject: any | null = null;
+  let personaSummary: any | null = null;
   try {
     const { data: session } = await sb
       .from("sessions")
@@ -29,7 +31,8 @@ export default async function Page({
         .select("id,name,age,occupation,techfamiliarity,personality,goals,frustrations,painpoints,notes")
         .eq("id", String(session.persona_id))
         .single();
-      initialPersona = persona ?? null;\n      try { personaSummary = await getPersonaSummary(String(session.persona_id)); } catch {}
+      initialPersona = persona ?? null;
+      try { personaSummary = await getPersonaSummary(String(session.persona_id)); } catch {}
     }
     if (session?.project_id) {
       const { data: project } = await sb
@@ -43,6 +46,8 @@ export default async function Page({
 
   return <StartInterviewClient id={id} initialPersona={initialPersona} initialProject={initialProject} personaSummary={personaSummary ?? undefined} />;
 }
+
+
 
 
 
