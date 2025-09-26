@@ -105,13 +105,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
 
       const age = (summary?.age ?? (typeof serverPersona?.age === 'number' ? serverPersona.age : undefined) ?? fallbackPersona.age);
       const tech = (summary?.techFamiliarity ?? (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity) ?? fallbackPersona.techFamiliarity) as any;
-      const normalizePers = (v: any): "warm" | "neutral" | "reserved" => {
-        const t = String(v ?? '').toLowerCase();
-        if (t.includes('warm') || t.includes('friendly') || t.includes('open')) return 'warm';
-        if (t.includes('reserved') || t.includes('quiet') || t.includes('guarded') || t.includes('impatient') || t.includes('angry')) return 'reserved';
-        return 'neutral';
-      };
-      const personality = normalizePers(summary?.personality ?? (serverPersona as any)?.personality ?? fallbackPersona.personality);
+      const personality = (summary?.personality ?? (serverPersona as any)?.personality ?? fallbackPersona.personality) as any;
       const traits: string[] = [];
       let extraInstructions = '';
       if (summary) {
@@ -147,6 +141,21 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       return null;
     }
   }, [serverPersona, serverProject, fallbackPersona, summary]);
+
+  // Log the PersonaSummary used at startup for audit
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('PersonaSummaryUsed', summary);
+      if (summary) {
+        const missing: string[] = [];
+        if (!summary.personality) missing.push('personality');
+        if (!summary.techFamiliarity) missing.push('techFamiliarity');
+        if (!Array.isArray(summary.painPoints)) missing.push('painPoints');
+        if (missing.length) console.error('PersonaSummary missing fields:', missing);
+      }
+    }
+  }, [summary]);
 
   // Derive a display personality string from multiple possible fields
   const displayPersonality = useMemo(() => {
@@ -744,16 +753,16 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
               <li className="text-gray-600">{String(serverProject.description)}</li>
             ) : null}
             <li className="mt-2 font-medium">Persona</li>
-            {serverPersona?.name ? (<li>Name: {String(summary?.name ?? serverPersona?.name ?? "Participant")}</li>) : null}
-            <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
-            <li>Personality: {String(summary?.personality ?? (serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? fallbackPersona.personality)}</li>
+            <li>Name: {String(summary?.name ?? serverPersona?.name ?? 'Participant')}</li>
+            <li>Age: {typeof summary?.age === 'number' ? summary!.age : (typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age)}</li>
+            <li>Personality: {String(summary?.personality ?? (serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? '') || '—'}</li>
             <li>Tech: {(() => {
               const raw = summary?.techFamiliarity ?? (serverPersona as any)?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity;
               const t = String(raw ?? '').toLowerCase();
               if (t.includes('high')) return 'high';
               if (t.includes('medium')) return 'medium';
               if (t.includes('low')) return 'low';
-              return String(fallbackPersona.techFamiliarity);
+              return '';
             })()}</li>
             {(() => {
               const traits: string[] = [];

@@ -142,11 +142,13 @@ export function buildPrompt(args: {
   if (maybeSummary?.occupation) personaContextParts.push(`Occupation: ${maybeSummary.occupation}`);
   if (maybeSummary?.painPoints && maybeSummary.painPoints.length) personaContextParts.push(`Pain points: ${maybeSummary.painPoints.join(", ")}`);
   if (maybeSummary?.extraInstructions) personaContextParts.push(`Extra instructions: ${maybeSummary.extraInstructions}`);
+  const personalityRaw = (maybeSummary?.personality && String(maybeSummary.personality)) || String((persona as any).personality);
+  const techRaw = (maybeSummary?.techFamiliarity && String(maybeSummary.techFamiliarity)) || String((persona as any).techFamiliarity);
   const hints: string[] = [
     `turn_taking: enforced(${persona.turnTaking?.maxSeconds ?? 8}s, interruptOnVoice=${persona.turnTaking?.interruptOnVoice ?? true})`,
     `speech_rate: ${persona.speechRate ?? 1.0}`,
-    `tech_familiarity: ${persona.techFamiliarity}`,
-    `personality: ${persona.personality}`,
+    `tech_familiarity: ${techRaw}`,
+    `personality: ${personalityRaw}`,
     `traits: ${Array.isArray(persona.traits) ? (persona.traits.join(", ") || "none") : "none"}`,
     `openness: ${typeof persona.openness === "number" ? persona.openness : 0.5}`,
     `cautiousness: ${typeof persona.cautiousness === "number" ? persona.cautiousness : 0.6}`,
@@ -166,7 +168,7 @@ export function buildPrompt(args: {
   const systemPrompt = [
     `You are role-playing a realistic interview participant for a UX research session.`,
     `Project context: ${projectContext}.`,
-    `Persona: ${persona.age} y/o, personality=${persona.personality}, tech=${persona.techFamiliarity}.`,
+    `Persona: ${persona.age} y/o, personality=${personalityRaw}, tech=${techRaw}.`,
     ...(personaContextParts.length ? [
       `Persona context:`,
       ...personaContextParts.map((l) => `- ${l}`),
