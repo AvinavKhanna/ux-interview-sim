@@ -403,29 +403,39 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         stopAll();
       });
 
+      // Simple queue for persona audio so chunks do not cut each other off
+      const audioQueue: string[] = [];
+      const playNext = () => {
+        const el = audioRef.current;
+        if (!el) return;
+        if (el.currentSrc && !el.paused && !el.ended) return; // currently playing
+        const next = audioQueue.shift();
+        if (!next) return;
+        el.src = next;
+        el.play().catch(() => undefined);
+        el.onended = () => {
+          try { URL.revokeObjectURL(next); } catch {}
+          playNext();
+        };
+      };
+
       client.on("message", (msg: JSONMessage | AudioMessage) => {
         if ((msg as AudioMessage).type === "audio") {
-          const el = audioRef.current;
-          if (!el) return;
           const blob = arrayBufferToBlob((msg as AudioMessage).data, "audio/webm");
           const url = URL.createObjectURL(blob);
-          el.src = url;
-          el.play().catch(() => undefined);
-          el.onended = () => URL.revokeObjectURL(url);
+          audioQueue.push(url);
+          playNext();
           return;
         }
         const json = msg as any;
         const type = json?.type as string | undefined;
 
         if (type === "audio_output") {
-          const el = audioRef.current;
-          if (!el) return;
           const b64 = json.data as string;
           const blob = base64ToBlob(b64, "audio/webm");
           const url = URL.createObjectURL(blob);
-          el.src = url;
-          el.play().catch(() => undefined);
-          el.onended = () => URL.revokeObjectURL(url);
+          audioQueue.push(url);
+          playNext();
           return;
         }
 
@@ -444,22 +454,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         }
         if (type === "user_message") {
           const content = toText(json);
-          const emos = extractEmotions(json);
-          // Send guidance for this turn based on sensitivity + facts
-          try {
-            const boundaries = scoringKnobs.boundaries ?? ["income","finances","religion","medical","exact address","school name","company name"];
-            const cautiousness = typeof scoringKnobs.cautiousness === 'number' ? scoringKnobs.cautiousness : 0.6;
-            const openness = typeof scoringKnobs.openness === 'number' ? scoringKnobs.openness : 0.5;
-            const trustWarmup = typeof scoringKnobs.trustWarmupTurns === 'number' ? scoringKnobs.trustWarmupTurns : 4;
-            const sens = scoreQuestion(content, { boundaries, cautiousness, openness, trustTurnsSeen: turnsSeenRef.current, trustWarmupTurns: trustWarmup });
-            const factGuide = buildFactGuidance(content, factStoreRef.current).guidance;
-            const stage = sens.level === 'high'
-              ? `[max_sentences=${sens.maxSentences}] [if you don't know specifics, say so and ask a clarifying question] [disclose_prob=${sens.discloseProb.toFixed(2)}]`
-              : `[max_sentences=${sens.maxSentences}] [disclose_prob=${sens.discloseProb.toFixed(2)}]`;
-            const preface = '[[guidance]] ' + ((factGuide ? factGuide + ' ' : '') + stage);
-            try { clientRef.current?.sendUserInput(preface); } catch {}
-          } catch {}
-          pushEmotions(emos);
+          const emos = extractEmotions(json);\n          // Capture emotions and show user's text\n          pushEmotions(emos);
           if (content.trim() && !content.trim().startsWith('[[guidance]]'))
             appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
           return;
@@ -631,7 +626,14 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             {serverPersona?.name ? (<li>Name: {String(serverPersona.name)}</li>) : null}
             <li>Age: {typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age}</li>
             <li>Personality: {String((serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? fallbackPersona.personality)}</li>
-            <li>Tech: {String(serverPersona?.techfamiliarity ?? fallbackPersona.techFamiliarity)}</li>
+            <li>Tech: {(() => {
+              const raw = (serverPersona as any)?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity;
+              const t = String(raw ?? '').toLowerCase();
+              if (t.includes('high')) return 'high';
+              if (t.includes('medium')) return 'medium';
+              if (t.includes('low')) return 'low';
+              return String(fallbackPersona.techFamiliarity);
+            })()}</li>
             {(() => {
               const traits: string[] = [];
               const add = (v: any) => { if (!v) return; if (Array.isArray(v)) v.forEach(x=>{ const s=String(x).trim(); if (s) traits.push(s);}); else { const s=String(v).trim(); if (s) traits.push(s);} };
@@ -710,6 +712,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
 
 
 
