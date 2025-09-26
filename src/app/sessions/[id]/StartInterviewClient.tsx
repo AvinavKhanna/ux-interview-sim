@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildPrompt, deriveInitialKnobs } from "@/lib/prompt/personaPrompt";
+import { extractEmotions } from "@/lib/emotions";
+import EmotionStrip from "@/app/sessions/[id]/EmotionStrip";
 import {
   VoiceClient,
   createSocketConfig,
@@ -16,12 +18,21 @@ type Props = { id: string; initialPersona?: any | null; initialProject?: any | n
 
 type ConnectState = "idle" | "fetching-token" | "connecting" | "connected" | "error";
 
+type EmotionPair = { name: string; score: number };
+
 type Turn = {
   id: string;
   role: "user" | "persona";
   text: string;
   at: string;
+  meta?: { emotions?: EmotionPair[] };
 };
+
+declare global {
+  interface Window {
+    __HUME_SAMPLE__?: unknown;
+  }
+}
 
 export default function StartInterviewClient({ id, initialPersona, initialProject }: Props) {
   const [state, setState] = useState<ConnectState>("idle");
@@ -29,6 +40,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [emotionFeed, setEmotionFeed] = useState<{ at: number; items: EmotionPair[] }[]>([]);
   // Resolved from the token route (real selected persona/project)
   const [serverPrompt, setServerPrompt] = useState<string | null>(null);
   const [serverPersona, setServerPersona] = useState<any | null>(initialPersona ?? null);
@@ -222,6 +234,36 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     setTurns((prev) => [...prev, t]);
   }, []);
 
+  const pushEmotions = useCallback((items: EmotionPair[] | undefined) => {
+    if (!items || !items.length) return;
+    const at = Date.now();
+    setEmotionFeed((prev) => {
+      const cutoff = at - 8000;
+      const next = prev.filter((e) => e.at >= cutoff);
+      next.push({ at, items });
+      return next.slice(-50); // keep it small
+    });
+  }, []);
+
+  const rollingTop3 = useMemo(() => {
+    const at = Date.now();
+    const cutoff = at - 8000;
+    const recent = emotionFeed.filter((e) => e.at >= cutoff);
+    if (!recent.length) return [] as EmotionPair[];
+    const sums = new Map<string, { total: number; n: number }>();
+    for (const entry of recent) {
+      for (const it of entry.items) {
+        const rec = sums.get(it.name) ?? { total: 0, n: 0 };
+        rec.total += it.score;
+        rec.n += 1;
+        sums.set(it.name, rec);
+      }
+    }
+    const avg = Array.from(sums.entries()).map(([name, v]) => ({ name, score: v.total / Math.max(1, v.n) }));
+    avg.sort((a, b) => b.score - a.score);
+    return avg.slice(0, 3);
+  }, [emotionFeed]);
+
   const connectVoice = useCallback(async (token: string) => {
     setState("connecting");
     setStatusMsg("Connecting to voice...");
@@ -251,6 +293,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       const client = VoiceClient.create(config);
       clientRef.current = client;
 
+      const sampleLogged = { current: false } as { current: boolean };
+
       client.on("open", () => {
         setState("connected");
         setStatusMsg("Connected. Waiting for your first question.");
@@ -258,7 +302,13 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         try {
           const base = (serverPrompt ?? computedPrompt ?? fallbackPrompt) || "";
           const finalPrompt = rulesAppendix ? base + "\n" + rulesAppendix : base;
-          client.sendSessionSettings?.({ systemPrompt: finalPrompt });
+          // Enable prosody/emotion signals if supported by the runtime.
+          // The shape below is tolerant; unknown keys are ignored by the SDK.
+          client.sendSessionSettings?.({
+            systemPrompt: finalPrompt,
+            // @ts-ignore - some SDK versions don’t type models on this call
+            models: { prosody: { enable: true } },
+          } as any);
         } catch {}
         startRecorder();
       });
@@ -300,22 +350,33 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
           return;
         }
 
+        // Log one sample payload to the window for inspection.
+        if (!window.__HUME_SAMPLE__) {
+          try { window.__HUME_SAMPLE__ = json; /* eslint-disable-next-line no-console */ console.log("HUME_SAMPLE", json); } catch {}
+        }
+
         const toText = (obj: any): string => (obj?.message?.content ?? obj?.text ?? obj?.content ?? "").toString();
         if (type === "assistant_message") {
           const content = toText(json);
-          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "persona", text: content.trim(), at: new Date().toISOString() });
+          const emos = extractEmotions(json);
+          pushEmotions(emos);
+          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "persona", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
           return;
         }
         if (type === "user_message") {
           const content = toText(json);
-          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString() });
+          const emos = extractEmotions(json);
+          pushEmotions(emos);
+          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role: "user", text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
           return;
         }
         if (type === "conversation.message") {
           const content = toText(json);
           const roleRaw = (json?.message?.role ?? json?.role ?? json?.speaker ?? "").toString().toLowerCase();
           const role: "user" | "persona" = roleRaw.includes("assistant") || roleRaw.includes("persona") ? "persona" : "user";
-          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role, text: content.trim(), at: new Date().toISOString() });
+          const emos = extractEmotions(json);
+          pushEmotions(emos);
+          if (content.trim()) appendTurn({ id: crypto.randomUUID(), role, text: content.trim(), at: new Date().toISOString(), meta: { emotions: emos } });
           return;
         }
       });
@@ -442,7 +503,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       </div>
 
       {/* Main layout: persona left, chat right */}
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
         <div className="rounded border p-4">
           <h2 className="font-medium mb-2">Project & Persona</h2>
           <ul className="text-sm space-y-1">
@@ -461,14 +522,21 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         </div>
 
         <div className="rounded border p-0 md:col-span-2 flex flex-col">
-          <div id="chat-area" className="flex-1 overflow-y-auto p-4 space-y-3" aria-live="polite">
+          <div className="border-b p-2">
+            <div className="text-xs text-gray-600 mb-1">Live emotions (last 8s)</div>
+            <EmotionStrip items={rollingTop3} compact />
+          </div>
+          <div id="chat-area" className="h-[60vh] overflow-y-auto p-4 space-y-3" aria-live="polite">
             {turns.length === 0 ? (
               <div className="text-xs text-gray-500">Say or type something to begin...</div>
             ) : (
               turns.map((t) => (
                 <div key={t.id} className={`flex ${t.role === "user" ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[75%] rounded px-3 py-2 text-sm shadow ${t.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"}`}>
-                    {t.text}
+                    <div>{t.text}</div>
+                    {t.meta?.emotions && t.meta.emotions.length ? (
+                      <EmotionStrip items={t.meta.emotions} />
+                    ) : null}
                   </div>
                 </div>
               ))
