@@ -123,6 +123,28 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       return null;
     }
   }, [serverPersona, serverProject, fallbackPersona]);
+
+  // Knobs for turn-level sensitivity scoring derived from current persona
+  const scoringKnobs = useMemo(() => {
+    try {
+      const age = typeof serverPersona?.age === 'number' && Number.isFinite(serverPersona.age) ? serverPersona.age : fallbackPersona.age;
+      const tech = (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
+      const normalizePers = (v: any): "warm" | "neutral" | "reserved" => {
+        const t = String(v ?? '').toLowerCase();
+        if (t.includes('warm') || t.includes('friendly') || t.includes('open')) return 'warm';
+        if (t.includes('reserved') || t.includes('quiet') || t.includes('guarded') || t.includes('impatient') || t.includes('angry')) return 'reserved';
+        return 'neutral';
+      };
+      const personality = normalizePers((serverPersona as any)?.personality ?? fallbackPersona.personality);
+      const traits: string[] = [];
+      const add = (v: any) => { if (!v) return; if (Array.isArray(v)) v.forEach((x:any)=>{ const s=String(x).trim(); if (s) traits.push(s);}); else { const s=String(v).trim(); if (s) traits.push(s);} };
+      if (serverPersona) {
+        add(serverPersona.traits); add(serverPersona.goals); add(serverPersona.frustrations); add(serverPersona.painpoints);
+        if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
+      }
+      return deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality });
+    } catch { return fallbackPersona; }
+  }, [serverPersona, fallbackPersona]);
   
 
   // audio + ws
@@ -396,10 +418,10 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
           const emos = extractEmotions(json);
           // Send guidance for this turn based on sensitivity + facts
           try {
-            const boundaries = fallbackPersona.boundaries ?? ["income","finances","religion","medical","exact address","school name","company name"];
-            const cautiousness = typeof fallbackPersona.cautiousness === 'number' ? fallbackPersona.cautiousness : 0.6;
-            const openness = typeof fallbackPersona.openness === 'number' ? fallbackPersona.openness : 0.5;
-            const trustWarmup = typeof fallbackPersona.trustWarmupTurns === 'number' ? fallbackPersona.trustWarmupTurns : 4;
+            const boundaries = scoringKnobs.boundaries ?? ["income","finances","religion","medical","exact address","school name","company name"];
+            const cautiousness = typeof scoringKnobs.cautiousness === 'number' ? scoringKnobs.cautiousness : 0.6;
+            const openness = typeof scoringKnobs.openness === 'number' ? scoringKnobs.openness : 0.5;
+            const trustWarmup = typeof scoringKnobs.trustWarmupTurns === 'number' ? scoringKnobs.trustWarmupTurns : 4;
             const sens = scoreQuestion(content, { boundaries, cautiousness, openness, trustTurnsSeen: turnsSeenRef.current, trustWarmupTurns: trustWarmup });
             const factGuide = buildFactGuidance(content, factStoreRef.current).guidance;
             const stage = sens.level === 'high'
@@ -512,10 +534,10 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     if (!trimmed || !clientRef.current || clientRef.current.readyState !== WebSocket.OPEN) return;
     // Sensitivity scoring and fact guidance
     try {
-      const boundaries = fallbackPersona.boundaries ?? ["income","finances","religion","medical","exact address","school name","company name"];
-      const cautiousness = typeof fallbackPersona.cautiousness === 'number' ? fallbackPersona.cautiousness : 0.6;
-      const openness = typeof fallbackPersona.openness === 'number' ? fallbackPersona.openness : 0.5;
-      const trustWarmup = typeof fallbackPersona.trustWarmupTurns === 'number' ? fallbackPersona.trustWarmupTurns : 4;
+      const boundaries = scoringKnobs.boundaries ?? ["income","finances","religion","medical","exact address","school name","company name"];
+      const cautiousness = typeof scoringKnobs.cautiousness === 'number' ? scoringKnobs.cautiousness : 0.6;
+      const openness = typeof scoringKnobs.openness === 'number' ? scoringKnobs.openness : 0.5;
+      const trustWarmup = typeof scoringKnobs.trustWarmupTurns === 'number' ? scoringKnobs.trustWarmupTurns : 4;
       const sens = scoreQuestion(trimmed, { boundaries, cautiousness, openness, trustTurnsSeen: turnsSeenRef.current, trustWarmupTurns: trustWarmup });
       const { guidance } = buildFactGuidance(trimmed, factStoreRef.current);
       const stage = sens.level === 'high'
