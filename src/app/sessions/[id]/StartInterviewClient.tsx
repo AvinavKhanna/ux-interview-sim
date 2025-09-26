@@ -48,6 +48,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const [coachEnabled, setCoachEnabled] = useState<boolean>(false);
   const [coachHint, setCoachHint] = useState<string | null>(null);
   const lastCoachAtRef = useRef<number>(0);
+  const stoppingRef = useRef(false);
+  const [stopping, setStopping] = useState(false);
   const factStoreRef = useRef(new FactStore());
   const turnsSeenRef = useRef(0);
   // Resolved from the token route (real selected persona/project)
@@ -316,6 +318,31 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   }, [stopMeters]);
 
   useEffect(() => () => stopAll(), [stopAll]);
+  // Also stop on unload to avoid lingering audio/credits
+  useEffect(() => {
+    const h = () => {
+      if (!stoppingRef.current) {
+        stoppingRef.current = true;
+        try { recorderRef.current?.stop(); } catch {}
+        try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
+        try { clientRef.current?.disconnect(); } catch {}
+      }
+    };
+    window.addEventListener('beforeunload', h);
+    return () => { try { h(); } catch {}; window.removeEventListener('beforeunload', h); };
+  }, []);
+  useEffect(() => {
+    const h = () => {
+      if (!stoppingRef.current) {
+        stoppingRef.current = true;
+        try { recorderRef.current?.stop(); } catch {}
+        try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
+        try { clientRef.current?.disconnect(); } catch {}
+      }
+    };
+    window.addEventListener('beforeunload', h);
+    return () => { try { h(); } catch {}; window.removeEventListener('beforeunload', h); };
+  }, []);
 
   // Scroll chat to bottom on new turn
   useEffect(() => {
@@ -555,11 +582,41 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     }
   }, [connectVoice, id]);
 
-  const stopInterview = useCallback(() => {
-    stopAll();
-    setState("idle");
-    setStatusMsg("Stopped.");
-  }, [stopAll]);
+  const stopInterview = useCallback(async () => {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    setStopping(true);
+    try {
+      // Local hard stop
+      try { recorderRef.current?.stop(); } catch {}
+      recorderStartedRef.current = false;
+      try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
+      localStreamRef.current = null;
+      try { clientRef.current?.disconnect(); } catch {}
+      clientRef.current = null;
+      stopMeters();
+      const el = audioRef.current;
+      if (el) { try { el.pause(); } catch {}; el.src = ""; }
+
+      // Persist transcript to in-memory store
+      const mapped = turns.map((t) => ({
+        speaker: t.role === 'persona' ? 'assistant' as const : 'user' as const,
+        text: t.text,
+        at: (() => { const n = Date.parse(t.at); return Number.isFinite(n) ? n : Date.now(); })(),
+      }));
+      await fetch(`/api/sessions/${encodeURIComponent(id)}/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ turns: mapped, meta: { stoppedAt: Date.now(), personaSummary: summary } }),
+      }).catch(() => undefined);
+    } finally {
+      setState("idle");
+      setStatusMsg("Stopped.");
+      setStopping(false);
+      try { window.location.assign(`/sessions/${id}/report`); } catch {}
+    }
+  }, [id, stopMeters, summary, turns]);
 
   // Pause persona playback while user talks; resume after short silence
   useEffect(() => {
@@ -666,9 +723,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             type="button"
             className="px-3 py-2 rounded bg-gray-200"
             onClick={stopInterview}
-            disabled={state !== "connected"}
+            disabled={stopping}
           >
-            Stop
+            {stopping ? 'Stopping…' : 'Stop'}
           </button>
         </div>
       </header>
