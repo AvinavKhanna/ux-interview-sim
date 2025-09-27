@@ -68,6 +68,26 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     [fallbackPersona, summary]
   );  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
 
+  const displayPersonality = useMemo(() => {
+    const s: any = summary as any;
+    const cands = [
+      s?.personality,
+      s?.tone,
+      s?.style,
+      s?.mood,
+      s?.temperament,
+      s?.attitude,
+      s?.disposition,
+      (serverPersona as any)?.personality,
+      (serverPersona as any)?.style,
+      (serverPersona as any)?.tone,
+    ];
+    for (const v of cands) {
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+    return '';
+  }, [summary, serverPersona]);
+
   // Fetch Summary persona as single source of truth and override local state
   useEffect(() => {
     let alive = true;
@@ -789,7 +809,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             <li className="mt-2 font-medium">Persona</li>
             <li>Name: {String(summary?.name ?? serverPersona?.name ?? 'Participant')}</li>
             <li>Age: {typeof summary?.age === 'number' ? summary!.age : (typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age)}</li>
-            <li>Personality: {String(summary?.personality ?? (serverPersona as any)?.personality ?? (serverPersona as any)?.style ?? (serverPersona as any)?.tone ?? '') || '—'}</li>
+            <li>Personality: {displayPersonality || '—'}</li>
             <li>Tech: {(() => {
               const raw = summary?.techFamiliarity ?? (serverPersona as any)?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity;
               const t = String(raw ?? '').toLowerCase();
