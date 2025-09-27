@@ -142,8 +142,9 @@ export function buildPrompt(args: {
   if (maybeSummary?.occupation) personaContextParts.push(`Occupation: ${maybeSummary.occupation}`);
   if (maybeSummary?.painPoints && maybeSummary.painPoints.length) personaContextParts.push(`Pain points: ${maybeSummary.painPoints.join(", ")}`);
   if (maybeSummary?.extraInstructions) personaContextParts.push(`Extra instructions: ${maybeSummary.extraInstructions}`);
-  const personalityRaw = (maybeSummary?.personality && String(maybeSummary.personality)) || String((persona as any).personality);
-  const techRaw = (maybeSummary?.techFamiliarity && String(maybeSummary.techFamiliarity)) || String((persona as any).techFamiliarity);
+  const personalityRaw = (maybeSummary?.personality && String(maybeSummary.personality)) || ((persona as any)?.personality ? String((persona as any).personality) : undefined);
+  const techRaw = (maybeSummary?.techFamiliarity && String(maybeSummary.techFamiliarity)) || ((persona as any)?.techFamiliarity ? String((persona as any).techFamiliarity) : undefined);
+  const ageRaw = typeof (maybeSummary as any)?.age === 'number' ? (maybeSummary as any).age : undefined;
   const hints: string[] = [
     `turn_taking: enforced(${persona.turnTaking?.maxSeconds ?? 8}s, interruptOnVoice=${persona.turnTaking?.interruptOnVoice ?? true})`,
     `speech_rate: ${persona.speechRate ?? 1.0}`,
@@ -165,10 +166,20 @@ export function buildPrompt(args: {
     `anti_fabrication: strict`,
   ];
 
+  const descriptorParts: string[] = [];
+  if (typeof ageRaw === 'number') descriptorParts.push(`${ageRaw} y/o`);
+  if (personalityRaw) descriptorParts.push(`personality=${personalityRaw}`);
+  if (techRaw) descriptorParts.push(`tech=${techRaw}`);
+
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.log('[persona:prompt-input]', { name: (maybeSummary as any)?.name, age: ageRaw, techFamiliarity: techRaw, personality: personalityRaw });
+  }
+
   const systemPrompt = [
     `You are role-playing a realistic interview participant for a UX research session.`,
     `Project context: ${projectContext}.`,
-    `Persona: ${persona.age} y/o, personality=${personalityRaw}, tech=${techRaw}.`,
+    `Persona: ${descriptorParts.join(', ')}.`,
     ...(personaContextParts.length ? [
       `Persona context:`,
       ...personaContextParts.map((l) => `- ${l}`),

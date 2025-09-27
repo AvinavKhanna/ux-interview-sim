@@ -609,6 +609,10 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       // Session rows already exist for this page path (/sessions/[id]).
       // Avoid creating a new one here to prevent 500s if API expects project/persona ids.
 
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[persona:post]', { name: summary?.name, age: summary?.age, techFamiliarity: summary?.techFamiliarity, personality: summary?.personality });
+      }
       await connectVoice(token);
     } catch (e: any) {
       console.error(e);
@@ -781,7 +785,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             ) : null}
             <li className="mt-2 font-medium">Persona</li>
             <li>Name: {String(summary?.name ?? serverPersona?.name ?? 'Participant')}</li>
-            <li>Age: {typeof summary?.age === 'number' ? summary!.age : (typeof serverPersona?.age === "number" ? serverPersona.age : fallbackPersona.age)}</li>
+            <li>Age: {typeof summary?.age === 'number' ? summary!.age : (typeof serverPersona?.age === "number" ? serverPersona.age : '—')}</li>
             <li>Personality: {displayPersonality || '—'}</li>
             <li>Tech: {(() => {
               const raw = summary?.techFamiliarity ?? (serverPersona as any)?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity;

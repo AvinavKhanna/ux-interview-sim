@@ -33,7 +33,13 @@ export default async function Page({
         .eq("id", String(session.persona_id))
         .single();
       initialPersona = persona ?? null;
-      try { personaSummary = await getPersonaSummary(id); } catch {}
+      try {
+        personaSummary = await getPersonaSummary(id);
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.log('[persona:interview-prop]', { name: personaSummary?.name, age: personaSummary?.age, techFamiliarity: personaSummary?.techFamiliarity, personality: personaSummary?.personality });
+        }
+      } catch {}
     }
     if (session?.project_id) {
       const { data: project } = await sb
