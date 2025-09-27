@@ -8,6 +8,7 @@ import { scoreQuestion } from "@/lib/sensitivity";
 import { FactStore, extractFactsFromText, buildFactGuidance } from "@/lib/factStore";
 import EmotionStrip from "@/app/sessions/[id]/EmotionStrip";
 import type { CoachResponse, CoachSample } from "@/types/coach";
+import { diffPersona } from "@/lib/debug/personaDiff";
 import {
   VoiceClient,
   createSocketConfig,
@@ -105,6 +106,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     if (!summary.techFamiliarity) missing.push('techFamiliarity');
     if (!Array.isArray(summary.painPoints) || summary.painPoints.length === 0) missing.push('painPoints');
     if (missing.length) console.warn('PersonaSummary missing fields:', missing.join(', '));
+    try { diffPersona('prop', personaSummary as any, 'state', summary as any); } catch {}
   }, [summary]);
   const rulesAppendix = useMemo(() => {
     try {

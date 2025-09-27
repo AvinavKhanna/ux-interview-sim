@@ -1,5 +1,5 @@
 import { supabaseServer } from "@/lib/supabase";
-import { ensurePersonaSummary, type PersonaSummary } from "@/types/persona";
+import { normalizePersonaSummary, type PersonaSummary } from "@/lib/persona/normalize";
 
 function asList(value: unknown): string[] {
   if (!value) return [];
@@ -29,7 +29,7 @@ export async function getPersonaSummary(id: string): Promise<PersonaSummary> {
   // If the session already carries a snapshot, prefer it verbatim
   const snapshot = (session as any)?.persona_summary;
   if (snapshot && typeof snapshot === "object") {
-    return ensurePersonaSummary(snapshot);
+    return normalizePersonaSummary(snapshot);
   }
 
   let personaId: string | null = null;
@@ -49,7 +49,7 @@ export async function getPersonaSummary(id: string): Promise<PersonaSummary> {
 
   if (!personaRow) return {} as PersonaSummary;
 
-  const summary: PersonaSummary = ensurePersonaSummary({
+  const summary: PersonaSummary = normalizePersonaSummary({
     name: personaRow.name,
     age: personaRow.age,
     techFamiliarity: normalizeTech(personaRow.techfamiliarity),
@@ -61,4 +61,3 @@ export async function getPersonaSummary(id: string): Promise<PersonaSummary> {
 
   return summary;
 }
-
