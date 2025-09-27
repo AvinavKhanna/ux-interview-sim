@@ -207,34 +207,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     }
   }, [summary]);
 
-  // Derive a display personality string from multiple possible fields
-  const displayPersonality = useMemo(() => {
-    const pick = (): string | null => {
-      const fields = [summary?.personality, 
-        (serverPersona as any)?.personality,
-        (serverPersona as any)?.style,
-        (serverPersona as any)?.tone,
-      ].filter(Boolean) as string[];
-      for (const v of fields) {
-        const s = String(v).trim();
-        if (s) return s;
-      }
-      const textPool: string[] = [];
-      const add = (v: any) => {
-        if (!v) return;
-        if (Array.isArray(v)) v.forEach((x) => { const s = String(x).toLowerCase(); if (s) textPool.push(s);});
-        else textPool.push(String(v).toLowerCase());
-      };
-      add((serverPersona as any)?.notes);
-      add((serverPersona as any)?.traits);
-      add((serverPersona as any)?.goals);
-      add((serverPersona as any)?.frustrations);
-      const keys = ["impatient","angry","guarded","friendly","warm","reserved","neutral","calm"];
-      for (const k of keys) if (textPool.some((t) => t.includes(k))) return k;
-      return null;
-    };
-    return pick();
-  }, [serverPersona]);
+  
 
   // Knobs for turn-level sensitivity scoring derived from current persona
   const scoringKnobs = useMemo(() => {
