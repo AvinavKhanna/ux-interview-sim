@@ -606,6 +606,21 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       setStatusMsg("Fetching Hume token...");
       setError(null);
 
+      // 1) Load the latest Summary persona and set it before starting.
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/persona`, { cache: 'no-store' });
+        if (res.ok) {
+          const j = await res.json();
+          if (j?.personaSummary) {
+            setSummary(j.personaSummary);
+            if (process.env.NODE_ENV !== 'production') {
+              // eslint-disable-next-line no-console
+              console.log('[persona:summary]', { name: j.personaSummary?.name, age: j.personaSummary?.age, techFamiliarity: j.personaSummary?.techFamiliarity, personality: j.personaSummary?.personality });
+            }
+          }
+        }
+      } catch {}
+
       // Prefer GET with sessionId (also capture persona/project + prompt)
       let token: string | null = null;
       const getRes = await fetch(`/api/hume/token?sessionId=${encodeURIComponent(id)}`, { method: "GET", cache: "no-store" });
