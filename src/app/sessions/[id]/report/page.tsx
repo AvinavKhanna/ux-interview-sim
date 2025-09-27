@@ -1,4 +1,4 @@
-import { talkTimeRatio, openVsClosed, summary } from "@/lib/analysis/interview";
+﻿import { talkTimeRatio, openVsClosed, summary } from "@/lib/analysis/interview";
 import type { SessionReport, Turn } from "@/types/report";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +48,7 @@ function Downloads({ report }: { report: SessionReport }) {
   const txt = toTxt(report.turns);
   const csv = toCsv(report.turns);
   return (
-    <div className="flex gap-2">
+    <div className="flex flex-wrap gap-2">
       <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.txt`, 'text/plain', txt)}>Download TXT</button>
       <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.json`, 'application/json', json)}>Download JSON</button>
       <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.csv`, 'text/csv', csv)}>Download CSV</button>
@@ -56,10 +56,34 @@ function Downloads({ report }: { report: SessionReport }) {
   );
 }
 
+function Transcript({ turns }: { turns: Turn[] }) {
+  'use client';
+  const React = require('react') as typeof import('react');
+  const [q, setQ] = React.useState('');
+  const filtered = q.trim() ? turns.filter(t => (t.text || '').toLowerCase().includes(q.toLowerCase())) : turns;
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2">
+        <input value={q} onChange={(e:any)=>setQ(e.target.value)} placeholder="Search transcript..." className="w-full max-w-sm rounded border px-2 py-1 text-sm" />
+        <div className="text-xs text-gray-600">{filtered.length} / {turns.length}</div>
+      </div>
+      <div className="max-h-[60vh] overflow-y-auto border rounded p-2 bg-white">
+        <ul className="text-sm space-y-2">
+          {filtered.map((t, i) => (
+            <li key={i} className={t.speaker === 'user' ? 'text-right' : 'text-left'}>
+              <span className="inline-block rounded px-2 py-1 bg-gray-100">[{fmt(t.at)}] {t.speaker === 'user' ? 'You' : 'Participant'}: {t.text}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const report = await fetchReport(id);
-  if (!report) return <div className="p-6">No report found.</div>;
+  if (!report) return <div className="p-6 text-red-600">Report not found. The transcript may not have been saved. Try stopping again or check the /stop call.</div>;
   const tt = talkTimeRatio(report.turns);
   const oc = openVsClosed(report.turns);
   const lines = summary(report.turns);
@@ -81,45 +105,45 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           <div>Stopped: {meta.stoppedAt ? formatTime(meta.stoppedAt) : 'unknown'}</div>
           <div>Duration: {typeof meta.durationMs === 'number' ? Math.round(meta.durationMs/1000) + 's' : 'unknown'}</div>
           {meta.personaSummary ? (
-            <div className="mt-2 text-gray-600">Persona: {String(meta.personaSummary?.name ?? 'Participant')} • {String(meta.personaSummary?.techFamiliarity ?? 'tech')} • {String(meta.personaSummary?.personality ?? 'personality')}</div>
+            <div className="mt-2 text-gray-600">Persona: {String(meta.personaSummary?.name ?? 'Participant')} - {String(meta.personaSummary?.techFamiliarity ?? '')} - {String(meta.personaSummary?.personality ?? '')}</div>
           ) : null}
+          <p className="text-sm text-gray-700 mt-2">Session overview: {lines.join(' ')}</p>
         </div>
       </section>
 
       <section className="rounded border p-4">
         <h2 className="font-medium mb-2">Analytics</h2>
+        <p className="text-xs text-gray-600 mb-3">Quick diagnostics about your interview style based on this conversation.</p>
         <ul className="list-disc list-inside text-sm text-gray-700 mb-3">
           {lines.map((l, i) => <li key={i}>{l}</li>)}
         </ul>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <div className="mb-1">Talk-time</div>
+            <div className="mb-1">Talk-time (lower is often better for interviewer)</div>
             <div className="h-3 bg-gray-200 rounded overflow-hidden">
               <div className="h-3 bg-blue-600" style={{ width: `${tt.userPct}%` }} />
             </div>
-            <div className="text-xs text-gray-600 mt-1">You {tt.userPct}% • Participant {tt.assistantPct}%</div>
+            <div className="text-xs text-gray-600 mt-1">You {tt.userPct}% - Participant {tt.assistantPct}%</div>
           </div>
           <div>
-            <div className="mb-1">Your questions</div>
+            <div className="mb-1">Your questions (open vs closed)</div>
             <div className="h-3 bg-gray-200 rounded overflow-hidden">
               <div className="h-3 bg-indigo-500" style={{ width: `${(oc.open + oc.closed) ? (oc.open/(oc.open+oc.closed))*100 : 0}%` }} />
             </div>
-            <div className="text-xs text-gray-600 mt-1">Open {oc.open} • Closed {oc.closed}</div>
+            <div className="text-xs text-gray-600 mt-1">Open {oc.open} - Closed {oc.closed}</div>
           </div>
         </div>
       </section>
 
       <section className="rounded border p-4">
         <h2 className="font-medium mb-2">Transcript</h2>
-        <ul className="text-sm space-y-2">
-          {report.turns.map((t, i) => (
-            <li key={i} className={t.speaker === 'user' ? 'text-right' : 'text-left'}>
-              <span className="inline-block rounded px-2 py-1 bg-gray-100">[{fmt(t.at)}] {t.speaker === 'user' ? 'You' : 'Participant'}: {t.text}</span>
-            </li>
-          ))}
-        </ul>
+        {!report.turns || report.turns.length === 0 ? (
+          <div className="text-sm text-red-600">Transcript is missing. If you stopped the interview abruptly, the final transcript may not have been saved.</div>
+        ) : (
+          // @ts-expect-error Client component within server page
+          <Transcript turns={report.turns} />
+        )}
       </section>
     </div>
   );
 }
-
