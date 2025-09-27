@@ -13,7 +13,22 @@ const pick = (o: any, ...keys: string[]) => {
 export function normalizePersonaSummary(input: any): PersonaSummary {
   if (!input) return {} as PersonaSummary;
 
-  const personality = pick(input, "personality", "tone", "style", "mood", "temperament");
+  let personality = pick(input, "personality", "tone", "style", "mood", "temperament");
+  if (!personality) {
+    // If personality exists but is not a simple string, try to coerce
+    const raw = input?.personality ?? input?.tone ?? input?.style ?? input?.mood ?? input?.temperament;
+    if (raw && typeof raw !== "string") {
+      if (Array.isArray(raw)) {
+        personality = raw.map((x) => String(x)).join(" ").trim() || undefined;
+      } else if (typeof raw === "object") {
+        const obj = raw as Record<string, unknown>;
+        const fromObj = (obj.label || obj.name || obj.value || obj.text) as string | undefined;
+        if (fromObj && String(fromObj).trim()) personality = String(fromObj).trim();
+      } else {
+        personality = String(raw);
+      }
+    }
+  }
   const extraInstructions = pick(input, "extraInstructions", "extra", "notes", "instructions");
 
   let painPoints: string[] | undefined;
@@ -40,4 +55,3 @@ export function normalizePersonaSummary(input: any): PersonaSummary {
     extraInstructions, // do not drop free text
   } as PersonaSummary;
 }
-
