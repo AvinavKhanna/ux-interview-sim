@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseServer } from '@/lib/supabase';
-import { ensurePersonaSummary, type PersonaSummary } from '@/types/persona';
+import { normalizePersonaSummary, type PersonaSummary } from '@/lib/persona/normalize';
+import { SessionStore } from '@/lib/sessionStore';
 
 // GET /api/sessions?projectId=... (optional)
 export async function GET(req: Request) {
@@ -23,7 +24,7 @@ export async function POST(req: Request) {
   // Accept either personaSummary or legacy persona; normalize if provided
   const raw = body.personaSummary ?? body.persona ?? null;
   let snapshot: PersonaSummary | null = null;
-  try { if (raw) snapshot = ensurePersonaSummary(raw); } catch {}
+  try { if (raw) snapshot = normalizePersonaSummary(raw); } catch {}
 
   const { data, error } = await sb
     .from('sessions')
@@ -39,6 +40,12 @@ export async function POST(req: Request) {
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    const id = (data as any)?.id as string | undefined;
+    if (id && snapshot) {
+      SessionStore.upsert(id, { meta: { id, startedAt: Date.now(), personaSummary: snapshot } as any });
+    }
+  } catch {}
   // Echo persona_summary for client usage
   return NextResponse.json({ ...data, persona_summary: snapshot ?? (data as any)?.persona_summary ?? null });
 }
