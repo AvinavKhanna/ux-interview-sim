@@ -382,6 +382,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns]);
 
+  const coachTimersRef = useRef<Record<string, number>>({});
   const appendTurn = useCallback((t: Turn) => {
     setTurns((prev) => [...prev, t]);
     if (t.role === "user") {
@@ -391,8 +392,36 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         const facts = extractFactsFromText(t.text);
         for (const f of facts) factStoreRef.current.set(f.key, f.value);
       } catch {}
+      // Real-time coach: evaluate this question after a short debounce
+      if (coachEnabled) {
+        const timer = window.setTimeout(() => {
+          setTurns((curr) => {
+            const lastAssist = [...curr].reverse().find((x) => x.role === 'persona')?.text || '';
+            const evaluate = (q: string, lastA: string): { kind: string; text: string } | null => {
+              const s = q.trim();
+              if (!s) return null;
+              const lower = s.toLowerCase();
+              const greetings = ["hi","hello","hey","how are you","good morning","good afternoon"];
+              if (greetings.some((g)=> lower === g || lower.startsWith(g+' '))) return { kind: 'rapport', text: 'Great rapport building.' };
+              const words = s.split(/\s+/).length;
+              const open = /^(how|why|what|describe|tell me|can you tell|walk me|explain)/i.test(s);
+              const personal = /(income|salary|address|phone|email|ssn|social security|religion|medical|school|company)/i.test(s) && /(which|what|where|who)/i.test(s);
+              if (personal) return { kind: 'too_personal', text: 'Possibly too personal; avoid specifics.' };
+              if (open && words >= 5) return { kind: 'good', text: 'Good open-ended question.' };
+              const shortAssist = lastA && lastA.split(/\s+/).length <= 12;
+              if (shortAssist && !open) return { kind: 'probe', text: 'Probe deeper (ask for an example).' };
+              if (words < 4) return { kind: 'vague', text: 'Too brief; add context.' };
+              return null;
+            };
+            const hint = evaluate(t.text, lastAssist);
+            if (!hint) return curr;
+            return curr.map((x)=> x.id === t.id ? { ...x, coach: hint } : x);
+          });
+        }, 500);
+        coachTimersRef.current[t.id] = timer as unknown as number;
+      }
     }
-  }, []);
+  }, [coachEnabled]);
 
   const pushEmotions = useCallback((items: EmotionPair[] | undefined) => {
     if (!items || !items.length) return;
