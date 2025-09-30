@@ -58,15 +58,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const [serverPersona, setServerPersona] = useState<any | null>(initialPersona ?? null);
   const [serverProject, setServerProject] = useState<any | null>(initialProject ?? null);
   const [summary, setSummary] = useState<PersonaSummary | undefined>(personaSummary);
-  // Fallback persona + prompt (used until server returns real data)
-  const fallbackPersona = useMemo(
-    () => deriveInitialKnobs({ age: 34, traits: ["curious", "hesitant"], techFamiliarity: "medium", personality: "neutral" }),
-    []
-  );
-  const fallbackPrompt = useMemo(
-    () => buildPrompt({ projectContext: "General UX research interview.", persona: summary ?? fallbackPersona }).systemPrompt,
-    [fallbackPersona, summary]
-  );  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
+  // Additional hard rules to prevent model defaults (e.g., 'Sarah, 34').
 
   const displayPersonality = useMemo(() => {
     const s: any = summary as any;
@@ -93,15 +85,25 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     let alive = true;
     (async () => {
       try {
-        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/persona`, { cache: 'no-store' });
+        // LocalStorage fallback first (helps if server snapshot not yet readable)
+        try {
+          const raw = localStorage.getItem(`personaSummary:${id}`);
+          if (raw && !summary) {
+            const parsed = JSON.parse(raw);
+            setSummary(parsed);
+            if (process.env.NODE_ENV !== 'production') {
+              // eslint-disable-next-line no-console
+              console.log('[persona:summary:fallback-local]');
+            }
+          }
+        } catch {}
+        const headerLocal = (() => { try { const raw = localStorage.getItem(`personaSummary:${id}`); return raw || ''; } catch { return ''; } })();
+        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/persona`, { cache: 'no-store', headers: headerLocal ? { 'x-persona-local': headerLocal } as any : undefined });
         const j = res.ok ? await res.json() : null;
         if (!alive) return;
         if (j?.personaSummary) {
           setSummary(j.personaSummary);
-          if (process.env.NODE_ENV !== 'production') {
-            // eslint-disable-next-line no-console
-            console.log('PersonaSummaryFetched', j.personaSummary);
-          }
+          logCheckpoint('[persona:summary]', j.personaSummary);
         } else if (process.env.NODE_ENV !== 'production') {
           // eslint-disable-next-line no-console
           console.warn('PersonaSummary API returned empty payload');
@@ -116,7 +118,33 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     return () => { alive = false; };
   }, [id]);
 
-  // Dev-only: expose and warn if key fields are missing
+  // Dev-only: expose and warn if key fields are missing; also log checkpoints
+  const logCheckpoint = useCallback((tag: string, p: any) => {
+    if (process.env.NODE_ENV === 'production') return;
+    try {
+      const snap = {
+        name: p?.name ?? undefined,
+        age: typeof p?.age === 'number' ? p.age : (typeof p?.age === 'string' && p.age.trim() ? Number(p.age) : undefined),
+        techFamiliarity: p?.techFamiliarity ?? p?.tech_level ?? p?.techLevel,
+        personality: p?.personality ?? p?.tone ?? p?.style ?? p?.mood ?? p?.temperament,
+      } as any;
+      // eslint-disable-next-line no-console
+      console.log(tag, snap);
+      const w = window as any;
+      w.__PERSONA_CHECKPOINTS__ = w.__PERSONA_CHECKPOINTS__ || {};
+      const base = w.__PERSONA_CHECKPOINTS__.__base__ || snap;
+      w.__PERSONA_CHECKPOINTS__.__base__ = base;
+      const diffs: string[] = [];
+      (['name','age','techFamiliarity','personality'] as const).forEach((k: any) => {
+        if (String(base[k] ?? '') !== String(snap[k] ?? '')) diffs.push(k);
+      });
+      if (diffs.length) {
+        // eslint-disable-next-line no-console
+        console.error('[persona:diff]', { at: tag, diffs, base, current: snap });
+      }
+      w.__PERSONA_CHECKPOINTS__[tag] = snap;
+    } catch {}
+  }, []);
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') return;
     try { (window as any).__persona = summary ?? null; } catch {}
@@ -127,7 +155,12 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     if (!Array.isArray(summary.painPoints) || summary.painPoints.length === 0) missing.push('painPoints');
     if (missing.length) console.warn('PersonaSummary missing fields:', missing.join(', '));
     try { diffPersona('prop', personaSummary as any, 'state', summary as any); } catch {}
-  }, [summary]);
+    logCheckpoint('[persona:summary]', summary);
+  }, [summary, logCheckpoint]);
+  useEffect(() => {
+    if (personaSummary) logCheckpoint('[persona:interview-prop]', personaSummary);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const rulesAppendix = useMemo(() => {
     try {
       const name = typeof serverPersona?.name === "string" && serverPersona.name.trim() ? serverPersona.name.trim() : "";
@@ -149,78 +182,42 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   // didn't return a ready-made prompt string.
   const computedPrompt = useMemo(() => {
     try {
-      const projectTitle = typeof serverProject?.title === "string" && serverProject.title.trim() ? serverProject.title.trim() : "General UX research interview.";
-      const projectDesc = typeof serverProject?.description === "string" && serverProject.description.trim() ? serverProject.description.trim() : "";
+      const projectTitle = typeof serverProject?.title === 'string' && serverProject.title.trim() ? serverProject.title.trim() : 'General UX research interview.';
+      const projectDesc = typeof serverProject?.description === 'string' && serverProject.description.trim() ? serverProject.description.trim() : '';
       const projectContext = [projectTitle, projectDesc].filter(Boolean).join(' - ') || 'General UX research interview.';
-
-      const age = (summary?.age ?? (typeof serverPersona?.age === 'number' ? serverPersona.age : undefined) ?? fallbackPersona.age);
-      const tech = (summary?.techFamiliarity ?? (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity) ?? fallbackPersona.techFamiliarity) as any;
-      const personality = (summary?.personality ?? (serverPersona as any)?.personality ?? fallbackPersona.personality) as any;
-      const traits: string[] = [];
-      let extraInstructions = '';
-      if (summary) {
-        if (summary.occupation) traits.push(summary.occupation);
-        if (Array.isArray(summary.painPoints)) traits.push(...summary.painPoints);
-        if (summary.extraInstructions) extraInstructions = summary.extraInstructions;
-      } else if (serverPersona) {
-        const add = (v: any) => {
-          if (!v) return;
-          if (Array.isArray(v)) v.forEach((x) => { const s = String(x).trim(); if (s) traits.push(s); });
-          else { const s = String(v).trim(); if (s) traits.push(s); }
-        };
-        add(serverPersona.painpoints);
-        add(serverPersona.goals);
-        add(serverPersona.frustrations);
-        add(serverPersona.traits);
-        if (typeof (serverPersona as any).notes === 'string' && (serverPersona as any).notes.trim()) {
-          extraInstructions = (serverPersona as any).notes.trim();
-        }
-        if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
-      }
-      const knobs = deriveInitialKnobs(summary ?? { age, traits, techFamiliarity: tech, personality });
-      let { systemPrompt } = buildPrompt({ projectContext, persona: summary ?? knobs });
-      const name = (summary?.name ?? (typeof serverPersona?.name === 'string' ? serverPersona.name : '')).toString().trim();
+      if (!summary) return null;
+      let { systemPrompt } = buildPrompt({ projectContext, persona: summary as any });
+      const name = (summary?.name ?? '').toString().trim();
       if (name) {
         systemPrompt += `\nName rule: Your name is ${name}. Do not change it or invent other names.`;
       }
-      if (extraInstructions || summary?.extraInstructions) {
-        systemPrompt += `\nAdditional instructions: ${summary?.extraInstructions ?? extraInstructions}`;
+      if (summary?.extraInstructions) {
+        systemPrompt += `\nAdditional instructions: ${summary.extraInstructions}`;
       }
       return systemPrompt;
     } catch {
       return null;
     }
-  }, [serverPersona, serverProject, fallbackPersona, summary]);
+  }, [serverProject, summary]);
 
-  // Log the PersonaSummary used at startup for audit
-  useEffect(() => {
-    if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
-      console.log('PersonaSummaryUsed', summary);
-      if (summary) {
-        const missing: string[] = [];
-        if (!summary.personality) missing.push('personality');
-        if (!summary.techFamiliarity) missing.push('techFamiliarity');
-        if (!Array.isArray(summary.painPoints)) missing.push('painPoints');
-        if (missing.length) console.error('PersonaSummary missing fields:', missing);
-      }
-    }
-  }, [summary]);
+  // replaced by checkpoint logs
 
   
 
   // Knobs for turn-level sensitivity scoring derived from current persona
   const scoringKnobs = useMemo(() => {
     try {
-      const age = typeof serverPersona?.age === 'number' && Number.isFinite(serverPersona.age) ? serverPersona.age : fallbackPersona.age;
-      const tech = (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity ?? fallbackPersona.techFamiliarity) as any;
+      const age = typeof serverPersona?.age === 'number' && Number.isFinite(serverPersona.age)
+        ? serverPersona.age
+        : (typeof summary?.age === 'number' ? summary.age : 35);
+      const tech = (summary?.techFamiliarity ?? (serverPersona?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity)) as any;
       const normalizePers = (v: any): "warm" | "neutral" | "reserved" => {
         const t = String(v ?? '').toLowerCase();
         if (t.includes('warm') || t.includes('friendly') || t.includes('open')) return 'warm';
         if (t.includes('reserved') || t.includes('quiet') || t.includes('guarded') || t.includes('impatient') || t.includes('angry')) return 'reserved';
         return 'neutral';
       };
-      const personality = normalizePers((serverPersona as any)?.personality ?? fallbackPersona.personality);
+      const personality = normalizePers((serverPersona as any)?.personality ?? summary?.personality);
       const traits: string[] = [];
       const add = (v: any) => { if (!v) return; if (Array.isArray(v)) v.forEach((x:any)=>{ const s=String(x).trim(); if (s) traits.push(s);}); else { const s=String(v).trim(); if (s) traits.push(s);} };
       if (serverPersona) {
@@ -228,8 +225,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
       }
       return deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality });
-    } catch { return fallbackPersona; }
-  }, [serverPersona, fallbackPersona]);
+    } catch { return deriveInitialKnobs({ age: 35, traits: [], techFamiliarity: 'medium', personality: 'neutral' }); }
+  }, [serverPersona, summary]);
   
 
   // audio + ws
@@ -423,6 +420,85 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     }
   }, [coachEnabled]);
 
+  // Coach: hydrate toggle from localStorage on first mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('coachEnabled');
+      if (raw === 'true') setCoachEnabled(true);
+      if (raw === 'false') setCoachEnabled(false);
+    } catch {}
+  }, []);
+
+  // Coach: persist toggle to localStorage
+  useEffect(() => {
+    try { localStorage.setItem('coachEnabled', String(coachEnabled)); } catch {}
+  }, [coachEnabled]);
+
+  // Coach: trigger on finalized user turn (typed or VAD)
+  const triggerCoach = useCallback((question: string) => {
+    try {
+      const q = (question || '').trim();
+      if (!coachEnabled) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.log('[coach:skipped] off');
+        }
+        return;
+      }
+      if (!q) return;
+
+      const now = Date.now();
+      if (now - lastCoachAtRef.current < 7000) return; // cooldown
+
+      const lower = q.toLowerCase();
+      const greetings = ["hi","hello","hey","how are you","good morning","good afternoon"];
+      const isGreeting = greetings.some((p) => lower === p || lower.startsWith(p + ' '));
+      if (isGreeting || q.split(/\s+/).length < 3) return;
+
+      lastCoachAtRef.current = now;
+
+      const lastUserTurns = turns.filter((t) => t.role === 'user').map((t) => t.text).slice(-2);
+      const lastAssistTurns = turns.filter((t) => t.role === 'persona').map((t) => t.text).slice(-2);
+      const sample: CoachSample & { personaSummary?: any } = {
+        question: q,
+        lastUserTurns,
+        lastAssistTurns,
+        personaKnobs: scoringKnobs as any,
+        personaSummary: summary as any,
+      };
+
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[coach:request]', { question: q });
+      }
+
+      fetch('/api/coach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-session-id': id },
+        cache: 'no-store',
+        body: JSON.stringify(sample),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j: CoachResponse | null) => {
+          const hint = j?.hints?.[0];
+          if (hint && hint.text) {
+            if (process.env.NODE_ENV !== 'production') {
+              // eslint-disable-next-line no-console
+              console.log('[coach:hint]', `kind=${hint.kind}`, `text="${hint.text}"`);
+            }
+            setCoachHint(String(hint.text));
+            window.setTimeout(() => setCoachHint(null), 6000);
+          } else {
+            if (process.env.NODE_ENV !== 'production') {
+              // eslint-disable-next-line no-console
+              console.log('[coach:none]');
+            }
+          }
+        })
+        .catch(() => undefined);
+    } catch {}
+  }, [coachEnabled, id, scoringKnobs, summary, turns]);
+
   const pushEmotions = useCallback((items: EmotionPair[] | undefined) => {
     if (!items || !items.length) return;
     const at = Date.now();
@@ -493,7 +569,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             // eslint-disable-next-line no-console
             console.log('RuntimePersonaForPrompt', summary);
           }
-          const base = ((summary ? computedPrompt : serverPrompt) ?? fallbackPrompt) || "";
+          try { if (summary) logCheckpoint('[persona:prompt]', summary); } catch {}
+          const base = ((serverPrompt ?? computedPrompt) || "");
           const finalPrompt = rulesAppendix ? base + "\n" + rulesAppendix : base;
           // Enable prosody/emotion signals if supported by the runtime.
           // The shape below is tolerant; unknown keys are ignored by the SDK.
@@ -598,7 +675,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       setState("error");
       stopAll();
     }
-  }, [appendTurn, startMeters, startRecorder, stopAll, serverPrompt, fallbackPrompt]);
+  }, [appendTurn, startMeters, startRecorder, stopAll, serverPrompt, computedPrompt]);
 
   const startInterview = useCallback(async () => {
     try {
@@ -608,15 +685,13 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
 
       // 1) Load the latest Summary persona and set it before starting.
       try {
-        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/persona`, { cache: 'no-store' });
+        const headerLocal2 = (() => { try { const raw = localStorage.getItem(`personaSummary:${id}`); return raw || ''; } catch { return ''; } })();
+        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/persona`, { cache: 'no-store', headers: headerLocal2 ? { 'x-persona-local': headerLocal2 } as any : undefined });
         if (res.ok) {
           const j = await res.json();
           if (j?.personaSummary) {
             setSummary(j.personaSummary);
-            if (process.env.NODE_ENV !== 'production') {
-              // eslint-disable-next-line no-console
-              console.log('[persona:summary]', { name: j.personaSummary?.name, age: j.personaSummary?.age, techFamiliarity: j.personaSummary?.techFamiliarity, personality: j.personaSummary?.personality });
-            }
+            logCheckpoint('[persona:summary]', j.personaSummary);
           }
         }
       } catch {}
@@ -635,6 +710,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         const postRes = await fetch("/api/hume/token", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: 'no-store',
           body: JSON.stringify({ sessionId: id }),
         });
         if (postRes.ok) {
@@ -670,37 +746,68 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     if (stoppingRef.current) return;
     stoppingRef.current = true;
     setStopping(true);
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[stop:start]');
+    }
     try {
       // Local hard stop
       try { recorderRef.current?.stop(); } catch {}
       recorderStartedRef.current = false;
       try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
       localStreamRef.current = null;
-      try { clientRef.current?.disconnect(); } catch {}
-      clientRef.current = null;
+      try { await audioCtxRef.current?.close?.(); } catch {}
       stopMeters();
       const el = audioRef.current;
-      if (el) { try { el.pause(); } catch {}; el.src = ""; }
+      if (el) { try { el.pause(); } catch {}; el.src = ''; }
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[stop:media-closed]');
+      }
 
-      // Persist transcript to in-memory store
+      // End Hume session/transport
+      try { (clientRef.current as any)?.close?.(1000, 'client-stop'); } catch {}
+      try { clientRef.current?.disconnect?.(); } catch {}
+      clientRef.current = null;
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[stop:hume-closed]');
+      }
+
+      // Persist transcript to in-memory store (with timeout guard)
       const mapped = turns.map((t) => ({
         speaker: t.role === 'persona' ? 'assistant' as const : 'user' as const,
         text: t.text,
         at: (() => { const n = Date.parse(t.at); return Number.isFinite(n) ? n : Date.now(); })(),
       }));
-      await fetch(`/api/sessions/${encodeURIComponent(id)}/stop`, {
+      const controller = new AbortController();
+      const timer = setTimeout(() => { try { controller.abort(); } catch {} }, 2500);
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
         body: JSON.stringify({ turns: mapped, meta: { stoppedAt: Date.now(), personaSummary: summary } }),
-      }).catch(() => undefined);
+        signal: controller.signal,
+      }).catch(() => null);
+      clearTimeout(timer);
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[stop:posted]', res && 'status' in (res as any) ? (res as any).status : '');
+      }
     } finally {
-      setState("idle");
-      setStatusMsg("Stopped.");
+      setState('idle');
+      setStatusMsg('Stopped.');
       setStopping(false);
       try { window.location.assign(`/sessions/${id}/report`); } catch {}
     }
   }, [id, stopMeters, summary, turns]);
+
+  // Ensure stop on unload/unmount (idempotent)
+  useEffect(() => {
+    const h = () => { try { void stopInterview(); } catch {} };
+    window.addEventListener('beforeunload', h);
+    return () => { window.removeEventListener('beforeunload', h); };
+  }, [stopInterview]);
 
   // Pause persona playback while user talks; resume after short silence
   useEffect(() => {
@@ -742,38 +849,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       try { clientRef.current.sendUserInput(trimmed); } catch {}
     }
     appendTurn({ id: crypto.randomUUID(), role: "user", text: trimmed, at: new Date().toISOString() });
-    // Live coach request (heuristic) if enabled and not a greeting
-    try {
-      if (coachEnabled) {
-        const now = Date.now();
-        if (now - lastCoachAtRef.current > 7000) {
-          const words = trimmed.split(/\s+/).filter(Boolean);
-          const greet = ["hi","hello","hey","how are you","good morning","good afternoon"]
-            .some((p) => trimmed.toLowerCase().startsWith(p));
-          if (!greet && words.length >= 3) {
-            lastCoachAtRef.current = now;
-            const lastUserTurns = turns.filter((t) => t.role === "user").map((t) => t.text).slice(-3);
-            const lastAssistTurns = turns.filter((t) => t.role === "persona").map((t) => t.text).slice(-3);
-            const sample: CoachSample = { question: trimmed, lastUserTurns, lastAssistTurns, personaKnobs: scoringKnobs as any };
-            fetch("/api/coach", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "x-session-id": id },
-              cache: "no-store",
-              body: JSON.stringify(sample),
-            })
-              .then((r) => (r.ok ? r.json() : null))
-              .then((j: CoachResponse | null) => {
-                const hint = j?.hints?.[0]?.text;
-                if (hint) {
-                  setCoachHint(hint);
-                  window.setTimeout(() => setCoachHint(null), 9000);
-                }
-              })
-              .catch(() => undefined);
-          }
-        }
-      }
-    } catch {}
+    // Live coach request (heuristic)
+    triggerCoach(trimmed);
     setText("");
   }, [appendTurn, text]);
 
@@ -828,24 +905,22 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
               <li className="text-gray-600">{String(serverProject.description)}</li>
             ) : null}
             <li className="mt-2 font-medium">Persona</li>
-            <li>Name: {String(summary?.name ?? serverPersona?.name ?? 'Participant')}</li>
-            <li>Age: {typeof summary?.age === 'number' ? summary!.age : (typeof serverPersona?.age === "number" ? serverPersona.age : '—')}</li>
-            <li>Personality: {displayPersonality || '—'}</li>
+            <li>Name: {(() => { const v = String(summary?.name ?? serverPersona?.name ?? '').trim(); return v || 'Not specified'; })()}</li>
+            <li>Age: {typeof summary?.age === 'number' ? summary!.age : (typeof serverPersona?.age === "number" ? serverPersona.age : 'Not specified')}</li>
+            <li>Personality: {displayPersonality || 'Not specified'}</li>
             <li>Tech: {(() => {
               const raw = summary?.techFamiliarity ?? (serverPersona as any)?.techfamiliarity ?? (serverPersona as any)?.techFamiliarity;
               const t = String(raw ?? '').toLowerCase();
               if (t.includes('high')) return 'high';
               if (t.includes('medium')) return 'medium';
               if (t.includes('low')) return 'low';
-              return '';
+              return 'Not specified';
             })()}</li>
             {(() => {
               const traits: string[] = [];
               const add = (v: any) => { if (!v) return; if (Array.isArray(v)) v.forEach(x=>{ const s=String(x).trim(); if (s) traits.push(s);}); else { const s=String(v).trim(); if (s) traits.push(s);} };
               if (summary) {
                 if (summary.occupation) traits.push(summary.occupation);
-                if (Array.isArray(summary.painPoints)) traits.push(...summary.painPoints);
-                if (summary.extraInstructions) traits.push(summary.extraInstructions);
               } else if (serverPersona) {
                 add(serverPersona.traits);
                 add(serverPersona.goals);
@@ -853,32 +928,31 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
                 add(serverPersona.painpoints);
                 if (typeof (serverPersona as any).occupation === 'string' && (serverPersona as any).occupation.trim()) traits.push((serverPersona as any).occupation.trim());
               }
-              const text = (traits.length ? traits.slice(0, 6).join(', ') : (fallbackPersona.traits.join(', ') || 'none'));
+              const text = (traits.length ? traits.slice(0, 6).join(', ') : 'none');
               return <li>Traits: {text}</li>;
             })()}
+            {Array.isArray(summary?.painPoints) && summary!.painPoints.length ? (
+              <li>Pain points: {summary!.painPoints.slice(0,6).join(', ')}</li>
+            ) : (
+              <li className="text-gray-400">Pain points: Not specified</li>
+            )}
             {(summary?.extraInstructions && summary.extraInstructions.trim()) ? (
               <li className="text-gray-600">Instructions: {summary.extraInstructions.trim()}</li>
             ) : (typeof (serverPersona as any)?.notes === 'string' && (serverPersona as any).notes.trim()) ? (
               <li className="text-gray-600">Instructions: {(serverPersona as any).notes.trim()}</li>
-            ) : null}
-            <li>Voice cfg: {fallbackPersona.voiceConfigId}</li>
+            ) : (
+              <li className="text-gray-400">Instructions: Not specified</li>
+            )}
+            {/* Voice config id intentionally omitted from UI to avoid defaults */}
           </ul>
         </div>
 
         <div className="rounded border p-0 md:col-span-2 flex flex-col">
           {coachEnabled && coachHint ? (
-            <div className="border-b p-2">
-              <div className="text-xs text-gray-600 mb-1">Coach nudge</div>
-              <div className="text-[12px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200">
-                {coachHint}
-              </div>
+            <div className="px-4 py-2 text-xs border-b bg-amber-50 text-amber-800">
+              <span className="font-medium mr-1">Coach:</span>
+              <span>{coachHint}</span>
             </div>
-          ) : null}
-          {process.env.NODE_ENV !== 'production' ? (
-            <details className="px-4 py-2 text-xs text-gray-600 border-b">
-              <summary className="cursor-pointer">Debug persona</summary>
-              <pre className="whitespace-pre-wrap text-[11px] mt-2">{JSON.stringify(summary ?? {}, null, 2)}</pre>
-            </details>
           ) : null}
           <div id="chat-area" className="h-[60vh] overflow-y-auto p-4 space-y-3" aria-live="polite">
             {turns.length === 0 ? (

@@ -68,15 +68,20 @@ function isSummary(v: any): v is PersonaSummary {
 
 export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs {
   if (isSummary(input)) {
-    const techText = (input.techFamiliarity ?? "medium") as TechLevel;
-    const persText = String(input.personality ?? "neutral").toLowerCase();
-    const personality: Personality = persText.includes("warm") || persText.includes("friendly") ? "warm" :
-      persText.includes("reserved") || persText.includes("quiet") || persText.includes("guarded") || persText.includes("impatient") || persText.includes("angry") ? "reserved" : "neutral";
+    // Do not silently default persona fields. Only derive knobs if present.
+    const techRaw = (input.techFamiliarity as TechLevel | undefined);
+    const persRaw = (typeof input.personality === 'string' ? input.personality : undefined) || undefined;
+    const persLower = (persRaw || '').toLowerCase();
+    const personality: Personality = persLower.includes('warm') || persLower.includes('friendly')
+      ? 'warm'
+      : persLower.includes('reserved') || persLower.includes('quiet') || persLower.includes('guarded') || persLower.includes('impatient') || persLower.includes('angry')
+      ? 'reserved'
+      : 'neutral';
     const traits: string[] = [];
     if (input.occupation) traits.push(input.occupation);
     if (Array.isArray(input.painPoints)) traits.push(...input.painPoints);
     if (input.extraInstructions) traits.push(input.extraInstructions);
-    const age = typeof (input as any).age === "number" ? (input as any).age : 35;
+    const age = typeof (input as any).age === 'number' ? (input as any).age : 35; // used only for knobs; UI/prompt should not read this default
     const bucket = ageBucket(age);
     const voiceConfigId = mapVoiceId(bucket, personality, undefined);
     const speechRate = age >= 60 ? 0.9 : 1.0;
@@ -84,14 +89,22 @@ export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs
     return {
       age,
       traits,
-      techFamiliarity: techText,
+      techFamiliarity: (techRaw as TechLevel) ?? 'medium',
       personality,
       voiceConfigId,
       speechRate,
       turnTaking,
       openness: 0.5,
       cautiousness: 0.6,
-      boundaries: ["income","finances","religion","medical","exact address","school name","company name"],
+      boundaries: [
+        'income',
+        'finances',
+        'religion',
+        'medical',
+        'exact address',
+        'school name',
+        'company name',
+      ],
       trustWarmupTurns: 4,
     };
   }
@@ -136,35 +149,56 @@ export function buildPrompt(args: {
   persona: PersonaKnobs | PersonaSummary;
 }): { systemPrompt: string; behaviorHints: string[] } {
   const { projectContext } = args;
-  const persona = (() => { const p: any = args.persona as any; if (p && Array.isArray(p.traits) && typeof p.age === 'number' && p.techFamiliarity) return p as PersonaKnobs; if (isSummary(p)) return deriveInitialKnobs(p); try { const age = typeof p?.age === 'number' ? p.age : 35; const traits = Array.isArray(p?.traits) ? p.traits : asList(p?.traits ?? []); const tech = (p?.techFamiliarity ?? 'medium') as TechLevel; const per = (p?.personality ?? 'neutral') as Personality; return deriveInitialKnobs({ age, traits, techFamiliarity: tech, personality: per }); } catch { return deriveInitialKnobs({ age: 35, traits: [], techFamiliarity: 'medium', personality: 'neutral' }); } })();
+  const pAny: any = args.persona as any;
+  const usingSummary = isSummary(pAny);
+  const personaKnobs: PersonaKnobs = (() => {
+    if (!usingSummary && pAny && Array.isArray(pAny.traits) && typeof pAny.age === 'number' && pAny.techFamiliarity) {
+      return pAny as PersonaKnobs;
+    }
+    // For summary inputs, do not inject persona-field defaults; derive knobs only for non-persona behavior.
+    const fallback = { age: 35, traits: [], techFamiliarity: 'medium' as TechLevel, personality: 'neutral' as Personality };
+    return deriveInitialKnobs(usingSummary ? (pAny as PersonaSummary) : {
+      age: typeof pAny?.age === 'number' ? pAny.age : fallback.age,
+      traits: Array.isArray(pAny?.traits) ? pAny.traits : asList(pAny?.traits ?? []),
+      techFamiliarity: (pAny?.techFamiliarity as TechLevel) ?? fallback.techFamiliarity,
+      personality: (pAny?.personality as Personality) ?? fallback.personality,
+    });
+  })();
+
   const personaContextParts: string[] = [];
-  const maybeSummary = isSummary(args.persona) ? (args.persona as PersonaSummary) : undefined;
+  const maybeSummary = usingSummary ? (pAny as PersonaSummary) : undefined;
   if (maybeSummary?.occupation) personaContextParts.push(`Occupation: ${maybeSummary.occupation}`);
-  if (maybeSummary?.painPoints && maybeSummary.painPoints.length) personaContextParts.push(`Pain points: ${maybeSummary.painPoints.join(", ")}`);
+  if (maybeSummary?.painPoints && maybeSummary.painPoints.length) personaContextParts.push(`Pain points: ${maybeSummary.painPoints.join(', ')}`);
   if (maybeSummary?.extraInstructions) personaContextParts.push(`Extra instructions: ${maybeSummary.extraInstructions}`);
-  const personalityRaw = (maybeSummary?.personality && String(maybeSummary.personality)) || ((persona as any)?.personality ? String((persona as any).personality) : undefined);
-  const techRaw = (maybeSummary?.techFamiliarity && String(maybeSummary.techFamiliarity)) || ((persona as any)?.techFamiliarity ? String((persona as any).techFamiliarity) : undefined);
+  const personalityRaw = (maybeSummary?.personality && String(maybeSummary.personality)) || undefined;
+  const techRaw = (maybeSummary?.techFamiliarity && String(maybeSummary.techFamiliarity)) || undefined;
   const ageRaw = typeof (maybeSummary as any)?.age === 'number' ? (maybeSummary as any).age : undefined;
-  const hints: string[] = [
-    `turn_taking: enforced(${persona.turnTaking?.maxSeconds ?? 8}s, interruptOnVoice=${persona.turnTaking?.interruptOnVoice ?? true})`,
-    `speech_rate: ${persona.speechRate ?? 1.0}`,
-    `tech_familiarity: ${techRaw}`,
-    `personality: ${personalityRaw}`,
-    `traits: ${Array.isArray(persona.traits) ? (persona.traits.join(", ") || "none") : "none"}`,
-    `openness: ${typeof persona.openness === "number" ? persona.openness : 0.5}`,
-    `cautiousness: ${typeof persona.cautiousness === "number" ? persona.cautiousness : 0.6}`,
-    `boundaries: ${(persona.boundaries && persona.boundaries.length ? persona.boundaries : [
-      "income",
-      "finances",
-      "religion",
-      "medical",
-      "exact address",
-      "school name",
-      "company name",
-    ]).join(", ")}`,
-    `trust_warmup_turns: ${typeof persona.trustWarmupTurns === "number" ? persona.trustWarmupTurns : 4}`,
-    `anti_fabrication: strict`,
-  ];
+
+  const hints: string[] = [];
+  hints.push(`turn_taking: enforced(${personaKnobs.turnTaking?.maxSeconds ?? 8}s, interruptOnVoice=${personaKnobs.turnTaking?.interruptOnVoice ?? true})`);
+  hints.push(`speech_rate: ${personaKnobs.speechRate ?? 1.0}`);
+  if (techRaw) hints.push(`tech_familiarity: ${techRaw}`);
+  if (personalityRaw) hints.push(`personality: ${personalityRaw}`);
+  if (Array.isArray(personaKnobs.traits)) hints.push(`traits: ${personaKnobs.traits.join(', ') || 'none'}`);
+  hints.push(`openness: ${typeof personaKnobs.openness === 'number' ? personaKnobs.openness : 0.5}`);
+  hints.push(`cautiousness: ${typeof personaKnobs.cautiousness === 'number' ? personaKnobs.cautiousness : 0.6}`);
+  hints.push(
+    `boundaries: ${(
+      personaKnobs.boundaries && personaKnobs.boundaries.length
+        ? personaKnobs.boundaries
+        : [
+            'income',
+            'finances',
+            'religion',
+            'medical',
+            'exact address',
+            'school name',
+            'company name',
+          ]
+    ).join(', ')}`
+  );
+  hints.push(`trust_warmup_turns: ${typeof personaKnobs.trustWarmupTurns === 'number' ? personaKnobs.trustWarmupTurns : 4}`);
+  hints.push(`anti_fabrication: strict`);
 
   const descriptorParts: string[] = [];
   if (typeof ageRaw === 'number') descriptorParts.push(`${ageRaw} y/o`);
@@ -173,17 +207,19 @@ export function buildPrompt(args: {
 
   if (process.env.NODE_ENV !== 'production') {
     // eslint-disable-next-line no-console
-    console.log('[persona:prompt-input]', { name: (maybeSummary as any)?.name, age: ageRaw, techFamiliarity: techRaw, personality: personalityRaw });
+    console.log('[persona:prompt]', { name: (maybeSummary as any)?.name, age: ageRaw, techFamiliarity: techRaw, personality: personalityRaw });
   }
 
   const systemPrompt = [
     `You are role-playing a realistic interview participant for a UX research session.`,
     `Project context: ${projectContext}.`,
     `Persona: ${descriptorParts.join(', ')}.`,
-    ...(personaContextParts.length ? [
-      `Persona context:`,
-      ...personaContextParts.map((l) => `- ${l}`),
-    ] : []),
+    ...(personaContextParts.length
+      ? [
+          `Persona context:`,
+          ...personaContextParts.map((l) => `- ${l}`),
+        ]
+      : []),
     `Behavior rules:`,
     `- Do NOT start the conversation. Wait for the interviewer to begin.`,
     `- Enforce turn-taking: stop speaking immediately if the interviewer starts talking.`,
@@ -195,8 +231,8 @@ export function buildPrompt(args: {
     `- If a requested detail is not provided in Persona context, do not invent it; ask a clarifying question.`,
     `- For sensitive topics in your boundaries list, be brief/hesitant or defer unless rapport is established.`,
     `- Use light hesitation ("uh...", "I'm not sure") when a question is sensitive or when cautiousness is high.`,
-    `- Increase openness gradually over the first ${typeof persona.trustWarmupTurns === "number" ? persona.trustWarmupTurns : 4} turns.`,
-  ].join("\n");
+    `- Increase openness gradually over the first ${typeof personaKnobs.trustWarmupTurns === 'number' ? personaKnobs.trustWarmupTurns : 4} turns.`,
+  ].join('\n');
 
   return { systemPrompt, behaviorHints: hints };
 }

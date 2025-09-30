@@ -1,6 +1,7 @@
 // src/app/sessions/summary/page.tsx
 'use client';
 import * as React from 'react';
+import { normalizePersonaSummary } from '@/lib/persona/normalize';
 import { useRouter } from 'next/navigation';
 import { useOnboarding } from '@/context/onboarding';
 import { Button, Card, Page, Breadcrumb } from '@/components/UI';
@@ -26,16 +27,23 @@ export default function SummaryPage() {
     if (!selected) return alert('Choose or create a persona first.');
     setStarting(true);
     try {
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[persona:post]', { name: selected.name, age: selected.age, techFamiliarity: selected.techFamiliarity, personality: selected.personality });
+      }
+      const summary = normalizePersonaSummary(selected as any);
       const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: projectId ?? undefined, personaId: selected.id, persona: selected }),
+        cache: 'no-store',
+        body: JSON.stringify({ projectId: projectId ?? undefined, personaId: selected.id, persona: selected, personaSummary: summary }),
       });
       const data = await res.json();
       if (!res.ok) {
         alert(data.error || 'Failed to start session');
         return;
       }
+      try { localStorage.setItem(`personaSummary:${data.id}`, JSON.stringify(summary)); } catch {}
       router.push(`/sessions/${data.id}`);
     } finally {
       setStarting(false);

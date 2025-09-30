@@ -332,7 +332,16 @@ export async function POST(request: Request) {
 
     const personaKnobs = toPersonaKnobs(personaRow as PersonaRow);
     const projectContext = toProjectContext(projectRow as ProjectRow);
-    const { systemPrompt, behaviorHints } = buildPrompt({ projectContext, persona: personaKnobs });
+    const promptPersonaGET = {
+      name: personaRow.name ?? undefined,
+      age: typeof personaRow.age === 'number' ? personaRow.age : undefined,
+      techFamiliarity: normalizeTechLevel(personaRow.techfamiliarity),
+      personality: normalizePersonality(personaRow.personality),
+      occupation: personaRow.occupation ?? undefined,
+      painPoints: coerceList(personaRow.painpoints),
+      extraInstructions: typeof personaRow.notes === 'string' ? personaRow.notes : undefined,
+    } as any;
+    const { systemPrompt, behaviorHints } = buildPrompt({ projectContext, persona: promptPersonaGET });
     const configId =
       chooseConfigId(personaRow as PersonaRow) ||
       (personaKnobs.voiceConfigId !== "default" ? personaKnobs.voiceConfigId : undefined) ||
@@ -342,7 +351,7 @@ export async function POST(request: Request) {
     const token = await getHumeToken();
 
     const personaSummary: PersonaRow = {
-      name: personaRow.name ?? "Participant",
+      name: personaRow.name ?? null,
       age: personaRow.age ?? null,
       occupation: personaRow.occupation ?? null,
       techfamiliarity: personaRow.techfamiliarity ?? null,
@@ -368,7 +377,7 @@ export async function POST(request: Request) {
       tokenType: token.token_type,
       expiresIn: token.expires_in,
       personaPrompt: systemPrompt,
-      personaName: personaSummary.name ?? "Participant",
+      personaName: personaSummary.name ?? undefined,
       configId,
       persona: personaSummary,
       project: projectSummary,
@@ -436,7 +445,16 @@ export async function GET(request: Request) {
 
     const personaKnobs = toPersonaKnobs(personaRow as PersonaRow);
     const projectContext = toProjectContext(projectRow as ProjectRow);
-    const { systemPrompt, behaviorHints } = buildPrompt({ projectContext, persona: personaKnobs });
+    const promptPersonaPOST = {
+      name: personaRow.name ?? undefined,
+      age: typeof personaRow.age === 'number' ? personaRow.age : undefined,
+      techFamiliarity: normalizeTechLevel(personaRow.techfamiliarity),
+      personality: normalizePersonality(personaRow.personality),
+      occupation: personaRow.occupation ?? undefined,
+      painPoints: coerceList(personaRow.painpoints),
+      extraInstructions: typeof personaRow.notes === 'string' ? personaRow.notes : undefined,
+    } as any;
+    const { systemPrompt, behaviorHints } = buildPrompt({ projectContext, persona: promptPersonaPOST });
     const configId =
       chooseConfigId(personaRow as PersonaRow) ||
       (personaKnobs.voiceConfigId !== 'default' ? personaKnobs.voiceConfigId : undefined) ||
@@ -446,7 +464,7 @@ export async function GET(request: Request) {
     const token = await getHumeToken();
 
     const personaSummary: PersonaRow = {
-      name: personaRow.name ?? 'Participant',
+      name: personaRow.name ?? null,
       age: personaRow.age ?? null,
       occupation: personaRow.occupation ?? null,
       techfamiliarity: personaRow.techfamiliarity ?? null,
@@ -472,7 +490,7 @@ export async function GET(request: Request) {
       tokenType: token.token_type,
       expiresIn: token.expires_in,
       personaPrompt: systemPrompt,
-      personaName: personaSummary.name ?? 'Participant',
+      personaName: personaSummary.name ?? undefined,
       configId,
       persona: personaSummary,
       project: projectSummary,

@@ -69,27 +69,28 @@ function heuristicCoach(sample: CoachSample, policy: CoachPolicy): CoachHint | n
     return { kind: "boundary", text: "Avoid asking for specific personal details. Reframe more generally or defer." };
   }
 
-  // clarify check (leading or double question)
-  if (/don\'t you think|wouldn\'t you say/.test(s) || /\?\s*and\s+/.test(q)) {
-    return { kind: "clarify", text: "Try neutral, single-part questions. Avoid leading phrasing." };
+  // clarify check (leading or compound question)
+  const sLead = s.replace(/^(and|so|well|uh|um|ok|okay|hmm)[,\s-]+/i, "");
+  if (/don\'t you think|wouldn\'t you say/.test(sLead) || /\?\s*and\s+/.test(q) || /\band\b.+\?\s*$/.test(q)) {
+    return { kind: "clarify", text: "Try a single, neutral question. Split long questions." };
   }
 
-  // praise for good openers
-  if (/^(how|what)\b/.test(s) || s.startsWith("can you tell me about") || s.startsWith("describe")) {
-    return { kind: "praise", text: "Nice open-ended question. Give space and follow up gently." };
+  // praise for good openers (allow light fillers at start)
+  if (/^(how|what|why)\b/.test(sLead) || sLead.startsWith("can you tell me about") || sLead.startsWith("describe")) {
+    return { kind: "praise", text: "Nice open question. Give space and follow up gently." };
   }
 
-  // probe if last assistant answer was short and question was open-ended
+  // probe if last assistant answer was short OR the question is broad open-ended
   const lastAssist = last(sample.lastAssistTurns || [], 1)[0] || "";
   const shortAssist = lastAssist.trim().length > 0 && lastAssist.trim().length < 80;
-  const openEnded = /\b(how|why|what|tell me about|describe)\b/.test(s);
-  if (shortAssist && openEnded) {
-    return { kind: "probe", text: "Consider a soft probe like: 'Could you share a bit more about that?'" };
+  const openEnded = /\b(how|why|what|tell me about|describe)\b/.test(sLead);
+  if (openEnded) {
+    return { kind: "probe", text: "Consider a soft probe: 'Could you share a specific example?'" };
   }
 
   // rapport (default nudge)
   if (/\bthank\b|\bthanks\b/.test(s)) {
-    return { kind: "rapport", text: "Acknowledge and keep the tone warm; reflect back briefly." };
+    return { kind: "rapport", text: "Acknowledge and keep a warm tone; reflect back briefly." };
   }
 
   return null;
@@ -144,4 +145,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ hints: [] } satisfies CoachResponse, { status: 200 });
   }
 }
-

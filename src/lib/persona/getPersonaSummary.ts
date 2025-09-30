@@ -22,14 +22,28 @@ export async function getPersonaSummary(id: string): Promise<PersonaSummary> {
   // First try as session id
   const { data: session } = await sb
     .from("sessions")
-    .select("id, persona_id, project_id, persona_summary")
+    .select("id, persona_id, project_id, persona_summary, feedback")
     .eq("id", id)
     .maybeSingle();
 
-  // If the session already carries a snapshot, prefer it verbatim
+  // Prefer embedded snapshot (explicit) or feedback.personaSummary if present
   const snapshot = (session as any)?.persona_summary;
+  const feedbackSnap = (session as any)?.feedback?.personaSummary;
   if (snapshot && typeof snapshot === "object") {
-    return normalizePersonaSummary(snapshot);
+    const norm = normalizePersonaSummary(snapshot);
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[persona:summary:loader]', { source: 'snapshot', name: norm.name, age: norm.age, techFamiliarity: norm.techFamiliarity, personality: norm.personality });
+    }
+    return norm;
+  }
+  if (feedbackSnap && typeof feedbackSnap === "object") {
+    const norm = normalizePersonaSummary(feedbackSnap);
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[persona:summary:loader]', { source: 'feedback', name: norm.name, age: norm.age, techFamiliarity: norm.techFamiliarity, personality: norm.personality });
+    }
+    return norm;
   }
 
   let personaId: string | null = null;
@@ -47,7 +61,13 @@ export async function getPersonaSummary(id: string): Promise<PersonaSummary> {
     .eq("id", String(personaId))
     .maybeSingle();
 
-  if (!personaRow) return {} as PersonaSummary;
+  if (!personaRow) {
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.warn('[persona:summary:loader]', { source: 'none' });
+    }
+    return {} as PersonaSummary;
+  }
 
   const summary: PersonaSummary = normalizePersonaSummary({
     name: personaRow.name,
@@ -58,6 +78,11 @@ export async function getPersonaSummary(id: string): Promise<PersonaSummary> {
     painPoints: asList(personaRow.painpoints ?? (personaRow as any)?.goals ?? (personaRow as any)?.frustrations),
     extraInstructions: (personaRow as any)?.notes,
   });
+
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.log('[persona:summary:loader]', { source: 'personas_row', name: summary.name, age: summary.age, techFamiliarity: summary.techFamiliarity, personality: summary.personality });
+  }
 
   return summary;
 }
