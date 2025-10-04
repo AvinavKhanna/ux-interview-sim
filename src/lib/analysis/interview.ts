@@ -48,8 +48,8 @@ export function summary(turns: Turn[]) {
   const tt = talkTimeRatio(turns);
   const oc = openVsClosed(turns);
   const lines = [
-    `Talk-time: You ${tt.userPct}% • Participant ${tt.assistantPct}%`,
-    `Your questions: ${oc.open} open • ${oc.closed} closed`,
+    `Talk-time: You ${tt.userPct}% — Participant ${tt.assistantPct}%`,
+    `Your questions: ${oc.open} open — ${oc.closed} closed`,
   ];
   const mo = missedOpportunities(turns, 2);
   if (mo.length) lines.push(...mo);

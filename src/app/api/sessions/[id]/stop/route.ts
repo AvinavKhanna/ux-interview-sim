@@ -22,17 +22,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const durationMs = Math.max(0, (meta.stoppedAt || stoppedAt) - (meta.startedAt || stoppedAt));
     const next: SessionReport = { meta: { ...meta, durationMs }, turns };
     SessionStore.set(id, next);
-    // Persist to DB as a fallback across dev reloads
+    // Persist transcript and end time to DB (schema-agnostic)
     try {
       const sb = supabaseServer();
-      const feedback = { ...(next.meta as any), personaSummary: (next.meta as any)?.personaSummary };
-      const up = await sb
-        .from('sessions')
-        .update({ transcript: turns, feedback, ended_at: new Date(meta.stoppedAt || stoppedAt).toISOString() })
-        .eq('id', id);
+      const iso = new Date(meta.stoppedAt || stoppedAt).toISOString();
+      const res: any = await sb.from('sessions').update({ transcript: turns, ended_at: iso }).eq('id', id);
       if (process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line no-console
-        console.log('[stop:server:db]', { status: up?.status, error: (up as any)?.error?.message });
+        console.log('[stop:server:db]', { status: res?.status, error: res?.error?.message });
       }
     } catch {}
     if (process.env.NODE_ENV !== 'production') {
@@ -44,3 +41,5 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }
+
+

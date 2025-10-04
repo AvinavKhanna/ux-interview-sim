@@ -14,10 +14,9 @@ export function diffPersona(labelA: string, a: PersonaSummary | undefined, label
   const sb = JSON.stringify(B);
   if (sa !== sb) {
     // eslint-disable-next-line no-console
-    console.error("[persona:DIFF]", labelA, A, "!=", labelB, B);
+    console.warn("[persona:DIFF]", labelA, A, "!=", labelB, B);
   } else {
     // eslint-disable-next-line no-console
     console.log("[persona:OK]", labelA, "==", labelB, A);
   }
 }
-

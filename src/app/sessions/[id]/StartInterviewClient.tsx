@@ -1,6 +1,7 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { buildPrompt, deriveInitialKnobs } from "@/lib/prompt/personaPrompt";
 import type { PersonaSummary } from "@/types/persona";
 import { extractEmotions } from "@/lib/emotions";
@@ -40,6 +41,7 @@ declare global {
 }
 
 export default function StartInterviewClient({ id, initialPersona, initialProject, personaSummary }: Props) {
+  const router = useRouter();
   const [state, setState] = useState<ConnectState>("idle");
   const [statusMsg, setStatusMsg] = useState<string>("Ready.");
   const [error, setError] = useState<string | null>(null);
@@ -140,7 +142,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       });
       if (diffs.length) {
         // eslint-disable-next-line no-console
-        console.error('[persona:diff]', { at: tag, diffs, base, current: snap });
+        console.warn('[persona:diff]', { at: tag, diffs, base, current: snap });
       }
       w.__PERSONA_CHECKPOINTS__[tag] = snap;
     } catch {}
@@ -239,6 +241,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const audioCtxRef = useRef<AudioContext | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const remoteAnalyserRef = useRef<AnalyserNode | null>(null);
+  const startedAtRef = useRef<number | null>(null);
+  const pendingSaveRef = useRef<any | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
 
   const [micLevel, setMicLevel] = useState(0);
   const [personaLevel, setPersonaLevel] = useState(0);
@@ -348,30 +353,20 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
 
   useEffect(() => () => stopAll(), [stopAll]);
   // Also stop on unload to avoid lingering audio/credits
+  // Important: do NOT call the handler in cleanup; React StrictMode mounts
+  // may invoke effect cleanups on mount which would incorrectly set the
+  // stop guard and block the Stop button. Only remove the listener.
   useEffect(() => {
     const h = () => {
-      if (!stoppingRef.current) {
-        stoppingRef.current = true;
-        try { recorderRef.current?.stop(); } catch {}
-        try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
-        try { clientRef.current?.disconnect(); } catch {}
-      }
+      try { recorderRef.current?.stop(); } catch {}
+      try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
+      try { clientRef.current?.disconnect(); } catch {}
     };
     window.addEventListener('beforeunload', h);
-    return () => { try { h(); } catch {}; window.removeEventListener('beforeunload', h); };
+    return () => { window.removeEventListener('beforeunload', h); };
   }, []);
-  useEffect(() => {
-    const h = () => {
-      if (!stoppingRef.current) {
-        stoppingRef.current = true;
-        try { recorderRef.current?.stop(); } catch {}
-        try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
-        try { clientRef.current?.disconnect(); } catch {}
-      }
-    };
-    window.addEventListener('beforeunload', h);
-    return () => { try { h(); } catch {}; window.removeEventListener('beforeunload', h); };
-  }, []);
+  // Removed previous duplicate beforeunload effect that set stoppingRef
+  // and invoked the handler during cleanup, which could block Stop clicks.
 
   // Scroll chat to bottom on new turn
   useEffect(() => {
@@ -564,6 +559,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         setState("connected");
         setStatusMsg("Connected. Waiting for your first question.");
         setError(null);
+        try { startedAtRef.current = Date.now(); } catch {}
         try {
           if (process.env.NODE_ENV !== 'production') {
             // eslint-disable-next-line no-console
@@ -742,14 +738,20 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     }
   }, [connectVoice, id]);
 
+  // Acceptance (manual):
+  // - Click Stop during a live session
+  //   -> mic & audio stop instantly; websocket closes; optional terminate/end is attempted
+  //   -> network shows one POST /api/sessions/[id]/stop (200) and navigation to /sessions/[id]/report
+  //   -> no additional audio/network activity occurs afterwards
   const stopInterview = useCallback(async () => {
     if (stoppingRef.current) return;
     stoppingRef.current = true;
     setStopping(true);
     if (process.env.NODE_ENV !== 'production') {
       // eslint-disable-next-line no-console
-      console.log('[stop:start]');
+      console.log('[stop:start]', `id=${id}`);
     }
+    let postedOk = false;
     try {
       // Local hard stop
       try { recorderRef.current?.stop(); } catch {}
@@ -759,13 +761,19 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       try { await audioCtxRef.current?.close?.(); } catch {}
       stopMeters();
       const el = audioRef.current;
-      if (el) { try { el.pause(); } catch {}; el.src = ''; }
+      if (el) { try { el.pause(); } catch {}; try { (el as any).srcObject = null; } catch {}; try { el.onended = null; } catch {}; el.src = ''; }
       if (process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line no-console
         console.log('[stop:media-closed]');
       }
 
       // End Hume session/transport
+      try {
+        const cl: any = clientRef.current as any;
+        if (cl?.terminate) { try { await cl.terminate(); } catch {} }
+        else if (cl?.end) { try { await cl.end(); } catch {} }
+        else if (process.env.NODE_ENV !== 'production') { /* eslint-disable-next-line no-console */ console.log('[stop:hume-terminate-missing]'); }
+      } catch {}
       try { (clientRef.current as any)?.close?.(1000, 'client-stop'); } catch {}
       try { clientRef.current?.disconnect?.(); } catch {}
       clientRef.current = null;
@@ -780,27 +788,45 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         text: t.text,
         at: (() => { const n = Date.parse(t.at); return Number.isFinite(n) ? n : Date.now(); })(),
       }));
-      const controller = new AbortController();
-      const timer = setTimeout(() => { try { controller.abort(); } catch {} }, 2500);
-      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({ turns: mapped, meta: { stoppedAt: Date.now(), personaSummary: summary } }),
-        signal: controller.signal,
-      }).catch(() => null);
-      clearTimeout(timer);
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.log('[stop:posted]', res && 'status' in (res as any) ? (res as any).status : '');
+      const payload = { turns: mapped, meta: { startedAt: startedAtRef.current ?? undefined, stoppedAt: Date.now(), personaSummary: summary } };
+      pendingSaveRef.current = payload;
+      let ok = false;
+      for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => { try { controller.abort(); } catch {} }, 2500);
+        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          cache: 'no-store',
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        }).catch(() => null);
+        clearTimeout(timer);
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.log('[stop:posted]', res && 'status' in (res as any) ? (res as any).status : '', `attempt=${attempt}`);
+        }
+        ok = !!(res && (res as any).ok);
+        if (!ok) {
+          setStatusMsg("Couldn't save transcript; retrying...");
+          await new Promise((r) => setTimeout(r, 400 * attempt));
+        }
+      }
+      if (!ok) {
+        setSaveFailed(true);
+        setError("Couldn't save transcript; retry below.");
+      } else {
+        postedOk = true;
       }
     } finally {
       setState('idle');
       setStatusMsg('Stopped.');
       setStopping(false);
-      try { window.location.assign(`/sessions/${id}/report`); } catch {}
+      if (postedOk) {
+        try { router.push(`/sessions/${id}/report`); } catch {}
+      }
     }
-  }, [id, stopMeters, summary, turns]);
+  }, [id, router, stopMeters, summary, turns]);
 
   // Ensure stop on unload/unmount (idempotent)
   useEffect(() => {
@@ -819,7 +845,14 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       try { if (!el.paused) el.pause(); } catch {}
       if (resumeTimer) { window.clearTimeout(resumeTimer); resumeTimer = null; }
     } else {
-      resumeTimer = window.setTimeout(() => { try { if (el.paused && !el.ended) void el.play(); } catch {} }, 500);
+      resumeTimer = window.setTimeout(() => {
+        try {
+          if (el.paused && !el.ended) {
+            const p = el.play();
+            try { (p as any)?.catch?.(() => {}); } catch {}
+          }
+        } catch {}
+      }, 500);
     }
     return () => { if (resumeTimer) window.clearTimeout(resumeTimer); };
   }, [micLevel]);
@@ -894,6 +927,12 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       <div aria-live="polite" className="text-sm text-gray-600">
         {error ? <span className="text-red-600">{error}</span> : statusMsg}
       </div>
+      {saveFailed ? (
+        <div className="text-xs text-amber-700 flex items-center gap-2">
+          Save failed. Please retry.
+          <button type="button" className="px-2 py-1 rounded border" onClick={retrySave}>Retry save</button>
+        </div>
+      ) : null}
 
       {/* Main layout: persona left, chat right */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
@@ -1006,6 +1045,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
     </div>
   );
 }
+
+
+
 
 
 
