@@ -486,6 +486,18 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       })
         .then((r) => (r.ok ? r.json() : null))
         .then((j: CoachResponse | null) => {
+          // Prefer mentor-style tip if present
+          const tip = (j as any)?.tip as { label: string; message: string; suggestion?: string } | undefined;
+          if (tip && tip.message) {
+            const composed = tip.suggestion ? `${tip.message} ${tip.suggestion}` : tip.message;
+            if (process.env.NODE_ENV !== 'production') {
+              // eslint-disable-next-line no-console
+              console.log('[coach:tip]', tip);
+            }
+            setCoachHint(composed);
+            window.setTimeout(() => setCoachHint(null), 6000);
+            return;
+          }
           const hint = j?.hints?.[0];
           if (hint && hint.text) {
             if (process.env.NODE_ENV !== 'production') {

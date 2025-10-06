@@ -58,6 +58,87 @@ export function questionTypeRatio(turns: Turn[]) {
   return out;
 }
 
+// Follow-up detection (heuristic): user question soon after assistant, with follow-up cues
+function isFollowUpQuestion(turns: Turn[], idx: number): boolean {
+  const t = turns[idx];
+  if (!t || t.speaker !== 'user') return false;
+  const s = String(t.text || '').trim();
+  if (!isQ(s)) return false;
+  // find previous assistant turn
+  let j = idx - 1;
+  while (j >= 0 && turns[j].speaker === 'user') j--;
+  if (j < 0 || turns[j].speaker !== 'assistant') return false;
+  const delta = Math.abs((Number(t.at) || 0) - (Number(turns[j].at) || 0));
+  const cues = /(why|how|what (else|specifically)|tell me more|more about|for example|example|specifically|could you (expand|elaborate)|and then)\b/i;
+  return delta <= 20_000 || cues.test(s);
+}
+
+export function questionTypesWithFollowUp(turns: Turn[]) {
+  const base = questionTypeRatio(turns);
+  let followUp = 0;
+  for (let i = 0; i < turns.length; i++) {
+    if (isFollowUpQuestion(turns, i)) followUp += 1;
+  }
+  return { open: base.open, closed: base.closed, rapport: base.rapport, factCheck: base.factcheck, followUp };
+}
+
+// Longest consecutive follow-up chain for interviewer
+export function followUpChainDepth(turns: Turn[]) {
+  let longest = 0;
+  let current = 0;
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
+    if (t.speaker === 'user' && isFollowUpQuestion(turns, i)) {
+      current += 1;
+    } else {
+      if (current > longest) longest = current;
+      current = 0;
+    }
+  }
+  if (current > longest) longest = current;
+  return longest;
+}
+
+type QuoteStrength = { quote: string; note: string };
+type QuoteImprove = { quote: string; note: string; suggestion?: string };
+export function buildInsightsQuotes(turns: Turn[]): { strengths: QuoteStrength[]; improvements: QuoteImprove[] } {
+  const strengths: QuoteStrength[] = [];
+  const improvements: QuoteImprove[] = [];
+  // Strength 1: open question by user
+  for (const t of turns) {
+    if (t.speaker === 'user' && isOpen(t.text)) {
+      strengths.push({ quote: t.text, note: 'Open question — invites elaboration.' });
+      break;
+    }
+  }
+  // Strength 2: enthusiastic participant reply
+  for (const t of turns) {
+    if (t.speaker === 'assistant' && /(definitely|love|great|usually|often|for example|i like|i enjoy|happy to)/i.test(String(t.text||''))) {
+      strengths.push({ quote: t.text, note: 'Participant engaged — good rapport signal.' });
+      break;
+    }
+  }
+  // Improvements from missed opportunities (short assistant then topic change)
+  for (let i = 0; i < turns.length - 2 && improvements.length < 2; i++) {
+    const u1 = turns[i];
+    const a = turns[i+1];
+    const u2 = turns[i+2];
+    if (u1.speaker !== 'user' || a.speaker !== 'assistant' || u2.speaker !== 'user') continue;
+    const aWords = words(a.text).length;
+    const within15s = Math.abs((u2.at || 0) - (u1.at || 0)) <= 15_000;
+    const follow = isOpen(u2.text) || /\b(why|how|example|more|tell me more|could you)\b/i.test(u2.text);
+    if (aWords < 12 && within15s && !follow) {
+      improvements.push({ quote: a.text, note: 'Short answer — consider probing once more.' });
+    }
+  }
+  // Improvements from closed questions with a suggestion
+  const rewrites = suggestRewritesV2(turns, 3);
+  for (const r of rewrites) {
+    improvements.push({ quote: r.original, note: 'Closed phrasing — try opening it up.', suggestion: r.rewrite });
+  }
+  return { strengths: strengths.slice(0,3), improvements: improvements.slice(0,3) };
+}
+
 // Tone/respect flags and double-barrel
 export function detectToneFlags(turns: Turn[]) {
   const swearing = turns.some((t) => t.speaker === 'user' && /(\bfuck\b|\bshit\b|\basshole\b|\bbitch\b|\bidiot\b|\bstupid\b|\bdumb\b)/i.test(t.text));
@@ -229,8 +310,19 @@ export function interviewScoreV2(turns: Turn[]) {
   const toneBase = 30; // respectful tone credit
   const rawTotal = positives + (toneBase - tonePenalty) - interruptPenalty - depthPenalty;
   const total = Math.max(0, Math.min(100, Math.round(rawTotal)));
-  const tooltip = 'Score is weighted from open-ratio, talk balance, follow-ups, tone/respect, rapport, fact-check.';
-  return { total, components: { openScore: Math.round(openScore), balanceScore: Math.round(balanceScore), followScore: Math.round(followScore), rapportScore, factScore, tonePenalty, interruptPenalty }, tooltip };
+  const breakdown = [
+    { key: 'openQuestions', label: 'Open Questions', value: Math.round(openScore), reason: `${q.open} open out of ${Math.max(1,totalQs)} (~${Math.round(openRatio*100)}%)` },
+    { key: 'talkBalance', label: 'Talk Balance', value: Math.round(balanceScore), reason: `You ${tt.userPct}% vs Participant ${tt.assistantPct}% (by words)` },
+    { key: 'followUps', label: 'Follow-ups', value: Math.round(followScore), reason: `${misses} missed probes` },
+    { key: 'rapport', label: 'Rapport', value: rapportScore, reason: q.rapport ? `${q.rapport} rapport turns` : 'none detected' },
+    { key: 'factCheck', label: 'Fact-check', value: factScore, reason: q.factcheck ? `${q.factcheck} clarifying turns` : 'none detected' },
+    { key: 'toneCredit', label: 'Tone credit', value: toneBase, reason: 'Respectful tone baseline' },
+    { key: 'tonePenalty', label: 'Tone penalty', value: -tonePenalty, reason: profanityEvent || hostilityEvent ? 'disrespect detected' : 'no penalty' },
+    { key: 'interruptions', label: 'Interruptions', value: -interruptPenalty, reason: interruptPenalty ? `${interruptCount} quick cut-ins` : 'no penalty' },
+    { key: 'depthPenalty', label: 'Depth penalty', value: -depthPenalty, reason: `${durMs < 120000 ? '<2m' : 'duration ok'}, ${userQCount < 3 ? '<3 questions' : 'questions ok'}` },
+  ];
+  const tooltip = 'Weights: Open (20), Balance (15), Follow-ups (20), Tone (base 30 - penalties), Rapport (10), Fact-check (5).';
+  return { total, rawTotal: Math.round(rawTotal), components: { openScore: Math.round(openScore), balanceScore: Math.round(balanceScore), followScore: Math.round(followScore), rapportScore, factScore, tonePenalty, interruptPenalty }, breakdown, tooltip } as any;
 }
 
 export function buildInsightsV2(turns: Turn[]) {
@@ -257,6 +349,45 @@ export function buildInsightsV2(turns: Turn[]) {
       console.log('[report:insights-empty]', { turns: turns.length });
     }
   }
+  return payload;
+}
+
+// Enriched insights (additive fields)
+export function buildInsightsV3(turns: Turn[]) {
+  const st = strengths(turns, 3);
+  const mo = missedOpportunitiesV2(turns, 5);
+  const recsBase: string[] = [];
+  if (mo.length) recsBase.push('Add one probe after brief answers.');
+  const stamps = turns.map(t=> Number(t.at)).filter(n=> Number.isFinite(n));
+  const durMs = stamps.length ? Math.max(0, Math.max(...stamps) - Math.min(...stamps)) : 0;
+  const userQCount = turns.filter(t => t.speaker==='user' && /\?$/.test((t.text||'').trim())).length;
+  if (durMs < 2*60_000 || userQCount < 3) recsBase.push('Interview felt brief — plan additional depth and follow-ups.');
+  const rewrites = suggestRewritesV2(turns, 2);
+  const recs = recsBase.concat(rewrites.map(r => `Rewrite: "${r.original}" → "${r.rewrite}"`));
+  const summaryLine = [ ...summary(turns) ].join(' · ');
+  // Narrative paragraph
+  const qTypes = questionTypesWithFollowUp(turns);
+  const tt = talkTimeRatio(turns);
+  const narrativeParts: string[] = [];
+  narrativeParts.push(`You spoke ${tt.userPct}% of the time (by words).`);
+  narrativeParts.push(`Questions: ${qTypes.open} open, ${qTypes.closed} closed, ${qTypes.rapport} rapport, ${qTypes.factCheck} fact-check${qTypes.followUp ? `, ${qTypes.followUp} follow-up` : ''}.`);
+  if (durMs) narrativeParts.push(`Duration ~ ${formatMmSs(durMs)}.`);
+  const summaryParagraph = narrativeParts.join(' ');
+  const strengthsBulletPoints = st.slice(0, 3);
+  const improvementBulletPoints: string[] = [];
+  if (qTypes.closed > qTypes.open) improvementBulletPoints.push('Reframe more closed questions to open prompts.');
+  if (mo.length) improvementBulletPoints.push('Add one probe after brief answers.');
+  if (durMs < 2*60_000) improvementBulletPoints.push('Aim for at least 2 minutes to build depth.');
+  const nextPracticePrompts = [
+    'Can you share a specific example of that?',
+    'What made that challenging for you recently?',
+  ];
+  // Examples
+  let strengthQuote = '';
+  for (const t of turns) { if (t.speaker==='user' && (isOpen(t.text) || /\b(thanks|appreciate|how are you)\b/i.test(t.text||''))) { strengthQuote = t.text; break; } }
+  const improvementPair = rewrites[0] ? { original: rewrites[0].original, suggested: rewrites[0].rewrite } : null;
+  const examples = { strengthQuote: strengthQuote || null, improvement: improvementPair };
+  const payload = { strengths: st, missed: mo, recommendations: recs, summaryLine, rewrites, narrative: { summaryParagraph }, strengthsBulletPoints, improvementBulletPoints, nextPracticePrompts, examples };
   return payload;
 }
 
@@ -306,30 +437,57 @@ export function buildInsights(turns: Turn[]) {
 export type AnalyticsReport = {
   talkTime: { userPct: number; assistantPct: number };
   questions: { open: number; closed: number; rapport: number; factcheck: number };
-  score: { total: number; components: any; tooltip: string };
+  // New additive fields: by-ms talk-time, enriched score
+  score: { total: number; components: any; tooltip: string; rawTotal?: number; breakdown?: { key: string; label: string; value: number; reason: string }[]; capped?: boolean; cappedReason?: string };
   words: { total: number; user: { total: number; avg: number; turns: number }, assistant: { total: number; avg: number; turns: number } };
   flags: { swearing: boolean; hostility: boolean; doubleBarrel: boolean };
-  insights: { strengths: string[]; missed: string[]; recommendations: string[]; summaryLine: string; rewrites: { original: string; rewrite: string }[] };
-  fillers?: { user: number; assistant: number; top: { word: string; count: number }[] };
+  insights: { strengths: string[]; missed: string[]; recommendations: string[]; summaryLine: string; rewrites: { original: string; rewrite: string }[]; narrative?: { summaryParagraph: string }; strengthsBulletPoints?: string[]; improvementBulletPoints?: string[]; nextPracticePrompts?: string[]; examples?: { strengthQuote: string | null; improvement: { original: string; suggested: string } | null } };
+  fillers?: { user: number; assistant: number; perMinute?: { user: number; assistant: number }; top?: { word: string; count: number }[]; userTop?: { word: string; count: number }[]; assistantTop?: { word: string; count: number }[] };
+  // Additive: richer talk-time and duration
+  talkTimeMs?: { user: number; assistant: number; total: number; userPct: number; assistantPct: number };
+  duration?: { startedAt: number; stoppedAt: number; durationMs: number; userQuestions: number };
+  questionTypes?: { open: number; closed: number; rapport: number; factCheck: number; followUp: number };
+  dataQuality?: { sufficient: boolean; notes: string[] };
+  insightsQuotes?: { strengths: { quote: string; note: string }[]; improvements: { quote: string; note: string; suggestion?: string }[] };
+  followUpChainDepth?: number;
 };
 
 export function buildAnalytics(turns: Turn[]): AnalyticsReport {
-  // Fillers tally (user + assistant), keep a short top list for user
+  // Fillers tally (user + assistant), strict list + isolated 'like'
   const fillers = (() => {
-    const tally = (speaker: 'user'|'assistant') => {
-      const re = /(\bum\b|\buh\b|\blike\b|\byou know\b|\bsort of\b|\bkind of\b|\bbasically\b|\bactually\b|\bi mean\b)/gi;
+    const normalizeToken = (raw: string) => raw.toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, '');
+    const FILLERS = new Set(['um','uh','erm','er','ah','eh','hmm','like']);
+    const countFor = (speaker: 'user'|'assistant') => {
       let c = 0; const map = new Map<string, number>();
       for (const t of turns) {
         if (t.speaker !== speaker) continue;
-        const m = String(t.text || '').toLowerCase().match(re) || [];
-        c += m.length; for (const w of m) map.set(w, (map.get(w) || 0) + 1);
+        const tokens = String(t.text || '').split(/\s+/).filter(Boolean).map(normalizeToken);
+        for (const tok of tokens) {
+          if (!tok) continue;
+          if (tok === 'like') { c += 1; map.set('like', (map.get('like')||0)+1); continue; }
+          if (FILLERS.has(tok) && tok !== 'like') { c += 1; map.set(tok, (map.get(tok)||0)+1); }
+        }
       }
       const top = Array.from(map.entries()).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([word,count])=>({word,count}));
       return { count: c, top };
     };
-    const u = tally('user');
-    const a = tally('assistant');
-    return { user: u.count, assistant: a.count, top: u.top };
+    const u = countFor('user');
+    const a = countFor('assistant');
+    return { user: u.count, assistant: a.count, top: u.top, userTop: u.top, assistantTop: a.top };
+  })();
+  // Talk time in milliseconds per speaker (approx. by turn gaps)
+  const talkMs = (() => {
+    let user = 0, assistant = 0;
+    for (let i = 0; i < turns.length - 1; i++) {
+      const cur = turns[i];
+      const next = turns[i+1];
+      const delta = Math.max(0, Number(next.at) - Number(cur.at));
+      if (cur.speaker === 'user') user += delta; else assistant += delta;
+    }
+    const total = user + assistant;
+    const userPct = total ? Math.round((user/total)*100) : 0;
+    const assistantPct = total ? Math.round((assistant/total)*100) : 0;
+    return { user, assistant, total, userPct, assistantPct };
   })();
   // Expose components so the report can reason about length
   const times = (() => {
@@ -340,13 +498,41 @@ export function buildAnalytics(turns: Turn[]): AnalyticsReport {
     const userQuestions = turns.filter(t=> t.speaker==='user' && /\?$/.test((t.text||'').trim())).length;
     return { startedAt, stoppedAt, durationMs, userQuestions };
   })();
+  // Per-minute filler rates
+  const perMinute = (() => {
+    const mins = times.durationMs > 0 ? (times.durationMs / 60000) : 0;
+    const rate = (n: number) => mins ? Number((n / mins).toFixed(2)) : 0;
+    return { user: rate(fillers.user), assistant: rate(fillers.assistant) };
+  })();
+  (fillers as any).perMinute = perMinute;
+  // Question types including follow-up
+  const qTypes = questionTypesWithFollowUp(turns);
+  // Score and data quality
+  let score = interviewScoreV2(turns) as any;
+  const dataQualityNotes: string[] = [];
+  const insufficient = (turns.length < 6) || (times.durationMs < 2*60_000);
+  if (turns.length < 6) dataQualityNotes.push('Fewer than 6 total turns.');
+  if (times.durationMs < 2*60_000) dataQualityNotes.push('Duration under 2 minutes.');
+  if (!Number.isFinite(times.durationMs) || times.durationMs === 0) dataQualityNotes.push('Duration estimated from sparse timestamps.');
+  if (insufficient) {
+    const capped = Math.min(40, Number(score?.total ?? 0));
+    score = { ...score, total: capped, capped: true, cappedReason: 'Capped at 40 due to short session (<6 turns or <2 min).' };
+  }
+  const quotes = buildInsightsQuotes(turns);
+  const chainDepth = followUpChainDepth(turns);
   return {
     talkTime: talkTimeRatio(turns),
+    talkTimeMs: talkMs,
+    duration: times,
+    questionTypes: qTypes,
     questions: questionTypeRatio(turns),
-    score: interviewScoreV2(turns),
+    score,
     words: wordStats(turns),
     flags: detectToneFlags(turns),
-    insights: buildInsightsV2(turns),
+    insights: buildInsightsV3(turns),
     fillers,
+    dataQuality: { sufficient: !insufficient, notes: dataQualityNotes },
+    insightsQuotes: quotes,
+    followUpChainDepth: chainDepth,
   };
 }

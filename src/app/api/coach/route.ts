@@ -9,6 +9,7 @@ type SessionCounters = {
   windowStart: number;
   countInWindow: number;
   questionsSeen: number; // approximate phase of interview
+  lastTipLabels?: string[]; // anti-spam: prevent repeats
 };
 
 const counters = new Map<string, SessionCounters>();
@@ -24,7 +25,7 @@ function resolveSessionId(req: Request): string {
 
 function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0 };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] };
   if (now - c.lastHintAt < policy.minGapMs) return true;
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
@@ -34,21 +35,26 @@ function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
   return false;
 }
 
-function noteHint(sessionId: string) {
+function noteHint(sessionId: string, label?: string) {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0 };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] };
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
     c.countInWindow = 0;
   }
   c.lastHintAt = now;
   c.countInWindow += 1;
+  if (label) {
+    c.lastTipLabels = Array.isArray(c.lastTipLabels) ? c.lastTipLabels : [];
+    c.lastTipLabels.push(label);
+    if (c.lastTipLabels.length > 3) c.lastTipLabels = c.lastTipLabels.slice(-3);
+  }
   counters.set(sessionId, c);
 }
 
 function noteQuestion(sessionId: string) {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0 };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] };
   c.questionsSeen += 1;
   counters.set(sessionId, c);
 }
@@ -349,6 +355,44 @@ function hasDoubleBarrel(question: string) {
   return (multiQ || andJoin) && !isBenignAnd(s);
 }
 
+// === Mentor-style intent classifier (lightweight) ===
+function classifyIntentPrimary(s: string): { primary: string; tags: string[] } {
+  const q = String(s || '').trim().toLowerCase();
+  const tags: string[] = [];
+  const isGreeting = /(\bhi\b|\bhello\b|\bhey\b|how are you|thanks|thank you|appreciate)/.test(q);
+  const isBio = /(\bname\b|\bage\b|\bpronouns?\b|\brole\b|\btitle\b)/.test(q) || /tell me about yourself|a bit about yourself/.test(q);
+  const isScope = /(we.?re (designing|building)|\btoday\b|in this (study|interview)|\bscope\b|\bfocus\b|\btopic\b|we\b.*(talk|cover|explore)|let.?s (talk|cover|focus))/.test(q);
+  const isFollow = /(you (said|mentioned)|tell me more|what happened next|and then|earlier|you were saying)/.test(q);
+  const isClarify = /(just to confirm|to clarify|did i get (this|that) right|do you mean|when you say)/.test(q);
+  const isReflect = /(sounds like|i hear you|that makes sense|i can see|i get that|i understand)/.test(q);
+  const isTransition = /(let.?s move on|switch gears|on another note|changing topic|next topic)/.test(q);
+  const isSensitive = /(income|salary|address|password|passcode|medical|bank( details)?|account (number|no\.)|routing|ssn|social security)/.test(q);
+  const isClosed = /^(is|are|do|did|does|can|could|will|would|have|has|had|was|were|should|shall)\b/.test(q);
+  const endsQ = /\?$/.test(q);
+  if (isGreeting) { tags.push('greeting'); return { primary: 'greeting', tags }; }
+  if (isBio) { tags.push('bio_setup'); return { primary: 'bio_setup', tags }; }
+  if (isScope) { tags.push('scope_setting'); return { primary: 'scope_setting', tags }; }
+  if (isFollow) { tags.push('follow_up'); return { primary: 'follow_up', tags }; }
+  if (isClarify) { tags.push('clarification'); return { primary: 'clarification', tags }; }
+  if (isReflect) { tags.push('reflection'); return { primary: 'reflection', tags }; }
+  if (isTransition) { tags.push('transition'); return { primary: 'transition', tags }; }
+  if (isSensitive) { tags.push('sensitive'); return { primary: 'sensitive', tags }; }
+  if (isClosed) { tags.push('closed_question'); return { primary: 'closed_question', tags }; }
+  if (endsQ) { tags.push('open_question'); return { primary: 'open_question', tags }; }
+  tags.push('open_question');
+  return { primary: 'open_question', tags };
+}
+
+function shouldSuppressTip(primary: string, phase: 'early'|'mid'|'late'): boolean {
+  if (primary === 'greeting' || primary === 'reflection' || primary === 'transition') return true;
+  if (primary === 'bio_setup' && phase === 'early') return true;
+  return false;
+}
+
+function formatTip(label: string, message: string, suggestion?: string) {
+  return { label, message, ...(suggestion ? { suggestion } : {}) } as { label: string; message: string; suggestion?: string };
+}
+
 function improvePhrasing(intent: string, topics: string[], tone: ReturnType<typeof analyzeTone>) {
   const ex: string[] = [];
   const topic = topics[0] || 'that';
@@ -475,28 +519,84 @@ export async function POST(req: Request) {
       });
     }
 
-    let hint: CoachHint | null = chooseHintFromContext(ctx);
-    // Fallbacks to existing logic if none selected
-    if (!hint) hint = semanticCoach(sessionId, sample);
-    if (!hint) hint = await maybeLLM(sample);
-    if (!hint) hint = heuristicCoach(sample, policy);
+    // Phase for early bio-setup suppression
+    const countersState = counters.get(sessionId) || { lastHintAt: 0, windowStart: Date.now(), countInWindow: 0, questionsSeen: 0, lastTipLabels: [] };
+    const phase: 'early'|'mid'|'late' = countersState.questionsSeen < 2 ? 'early' : countersState.questionsSeen < 6 ? 'mid' : 'late';
+    const intents = classifyIntentPrimary(ctx.text);
 
-    if (hint) {
+    // Decide mentor-style tip (non-breaking, additive)
+    let tip: { label: string; message: string; suggestion?: string } | null = null;
+    const lastAssist = ctx.lastAssistant?.text || '';
+    const lastAssistWords = ctx.lastAssistant?.wordCount || lastAssist.split(/\s+/).length;
+    const topics = extractTopics(lastAssist, 1);
+    const topic = topics[0] || 'that';
+    const react = analyzePersonaReaction(lastAssist);
+
+    const lastLabels = Array.isArray(countersState.lastTipLabels) ? countersState.lastTipLabels : [];
+    const labelNotRecent = (label: string) => lastLabels.indexOf(label) === -1;
+
+    if (!shouldSuppressTip(intents.primary, phase)) {
+      // Emotion-aware de-escalate
+      if (react.stressed && labelNotRecent('De-escalate')) {
+        tip = formatTip('De-escalate', "I'm hearing some frustration. That sounds tough—what led to that?");
+      }
+      // Sensitive ask
+      else if (intents.primary === 'sensitive' && labelNotRecent('Sensitive')) {
+        tip = formatTip('Sensitive', 'This can be personal. Give a reason and an opt-out.', 'To tailor the study, could you share…? Totally fine to skip.');
+      }
+      // Follow-up opportunity: long answer but current turn not follow-up
+      else if (lastAssistWords >= 18 && intents.primary !== 'follow_up' && labelNotRecent('Follow-up chance')) {
+        tip = formatTip('Follow-up chance', `There’s something to unpack there. Earlier you mentioned ${topic}—what made that difficult?`);
+      }
+      // Closed → Open (and not a clarifying confirm)
+      else if (intents.primary === 'closed_question' && labelNotRecent('Closed → Open')) {
+        const suggestion = buildSuggestedQuestion(ctx, lastAssist) || `How did you handle ${topic}?`;
+        tip = formatTip('Closed → Open', 'This may limit detail. Try:', suggestion);
+      }
+      // Clarify gently
+      else if (hasDoubleBarrel(ctx.text) && labelNotRecent('Clarify gently')) {
+        tip = formatTip('Clarify gently', `Quick check: When you say it, do you mean ${topic} A or B?`);
+      }
+      // Rapport → Specifics (mid/late only)
+      else if (intents.primary === 'greeting' || intents.primary === 'scope_setting') {
+        // no tip
+      } else if ((intents.primary === 'open_question' || intents.primary === 'bio_setup') && phase !== 'early' && labelNotRecent('Rapport → Specifics')) {
+        tip = formatTip('Rapport → Specifics', 'Nice start. When you’re ready, zoom in:', `What’s the most frustrating part of ${topic}?`);
+      }
+    }
+
+    // Legacy hint as fallback (backward-compatible)
+    let hint: CoachHint | null = null;
+    if (!tip) {
+      hint = chooseHintFromContext(ctx) || semanticCoach(sessionId, sample) || await maybeLLM(sample) || heuristicCoach(sample, policy);
+    }
+
+    // Enforce anti-spam label repeat and note hint
+    if (tip) {
+      if (labelNotRecent(tip.label)) {
+        noteHint(sessionId, tip.label);
+      } else {
+        tip = null; // suppress repeated label within recent window
+      }
+    } else if (hint) {
       // Backfill category for legacy hints
       if (!(hint as any).category) {
         const kind = (hint as any).kind as CoachHint['kind'];
         const cat: CoachCategory = kind === 'boundary' ? 'Tone' : kind === 'clarify' ? 'Craft' : (kind === 'praise' || kind === 'rapport') ? 'Reinforcement' : 'Follow-up';
         (hint as any).category = cat;
       }
+      noteHint(sessionId, (hint as any).category || 'hint');
+    }
+
+    if (hint || tip) {
       if (process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line no-console
-        console.log('[coach:hint]', { category: (hint as any).category, kind: (hint as any).kind, text: hint.text });
+        console.log('[coach:tip]', { tip, hint: hint ? { kind: (hint as any).kind, text: (hint as any).text } : null, intents });
       }
-      noteHint(sessionId);
-      return NextResponse.json({ hints: [hint] } satisfies CoachResponse);
+      return NextResponse.json({ hints: hint ? [hint] : [], tip, intents: intents.tags } satisfies CoachResponse);
     }
-    return NextResponse.json({ hints: [] } satisfies CoachResponse);
+    return NextResponse.json({ hints: [], tip: null, intents: intents.tags } satisfies CoachResponse);
   } catch (err) {
-    return NextResponse.json({ hints: [] } satisfies CoachResponse, { status: 200 });
+    return NextResponse.json({ hints: [], tip: null } satisfies CoachResponse, { status: 200 });
   }
 }

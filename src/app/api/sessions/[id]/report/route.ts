@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { SessionStore } from "@/lib/sessionStore";
 import { supabaseServer } from "@/lib/supabase";
 import type { SessionReport } from "@/types/report";
+import { buildAnalytics } from "@/lib/analysis/interview";
 
 export const dynamic = "force-dynamic";
 
@@ -69,5 +70,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     } catch {}
   }
   if (!report) return NextResponse.json({ error: "not found" }, { status: 404 });
-  return NextResponse.json({ report });
+  try {
+    const analytics = buildAnalytics(report.turns);
+    return NextResponse.json({ report, analytics });
+  } catch {
+    return NextResponse.json({ report });
+  }
 }

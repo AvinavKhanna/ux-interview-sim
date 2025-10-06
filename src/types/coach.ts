@@ -21,6 +21,10 @@ export type CoachSample = {
 
 export type CoachResponse = {
   hints: CoachHint[];
+  // Additive: mentor-style single tip (UI-friendly)
+  tip?: { label: string; message: string; suggestion?: string } | null;
+  // Optional debug intents detected for the current turn
+  intents?: string[];
 };
 
 // Detailed context provided per user turn
@@ -48,8 +52,8 @@ export type CoachPolicy = {
 };
 
 export const DefaultCoachPolicy: CoachPolicy = {
-  // Debounce per user: 8s cooldown, no queueing
-  minGapMs: 8000,
+  // Debounce per user: ~18s cooldown, no queueing
+  minGapMs: 18000,
   maxHintsPerMinute: 6,
   ignorePhrases: [
     "hi",
