@@ -448,7 +448,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       const lower = q.toLowerCase();
       const greetings = ["hi","hello","hey","how are you","good morning","good afternoon"];
       const isGreeting = greetings.some((p) => lower === p || lower.startsWith(p + ' '));
-      if (isGreeting || q.split(/\s+/).length < 3) return;
+      const isRapport = /\bhow are you\b|\bhow'?s your (day|week)\b|\bthanks\b|\bappreciate\b/.test(lower);
+      // Permit richer greetings for rapport hints; still drop very short inputs
+      if (!isRapport && (isGreeting || q.split(/\s+/).length < 2)) return;
 
       lastCoachAtRef.current = now;
 
@@ -484,10 +486,24 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             setCoachHint(String(hint.text));
             window.setTimeout(() => setCoachHint(null), 6000);
           } else {
-            if (process.env.NODE_ENV !== 'production') {
-              // eslint-disable-next-line no-console
-              console.log('[coach:none]');
-            }
+            // Local heuristic fallback to ensure a visible hint when server gives none
+            const lower = q.toLowerCase();
+            const rapport = /(how are you|how's your (day|week)|thanks|appreciate)/.test(lower);
+            const tooPersonal = /(income|salary|address|phone|email|medical|religion|school|company)/.test(lower) && /(which|what|where|who)/.test(lower);
+            const dbl = /\bwhat\b[^?]+\band\b[^?]+\?/i.test(lower);
+            const fact = /(just to confirm|did i get that right|you said|you mentioned|to clarify|let me make sure)/.test(lower);
+            const rude = /(fuck|shit|dumb|stupid|idiot|bitch|bastard)/i.test(lower);
+            const open = /^(how|what|why|describe|tell me|can you tell|walk me)/i.test(q);
+            let text: string | null = null;
+            if (rapport) text = 'Good rapport building.';
+            else if (tooPersonal) text = 'That may feel uncomfortable for a persona. Reframe or avoid specifics.';
+            else if (fact) text = 'Good fact-checking.';
+            else if (dbl) text = 'Good to split this into two questions.';
+            else if (rude) text = 'Adjust tone, this could harm the interview.';
+            else if (open) text = "Nice open question. Give space and follow up gently.";
+            else text = "Consider a soft probe: 'Could you share a specific example?'";
+            setCoachHint(text);
+            window.setTimeout(() => setCoachHint(null), 6000);
           }
         })
         .catch(() => undefined);
@@ -789,6 +805,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         at: (() => { const n = Date.parse(t.at); return Number.isFinite(n) ? n : Date.now(); })(),
       }));
       const payload = { turns: mapped, meta: { startedAt: startedAtRef.current ?? undefined, stoppedAt: Date.now(), personaSummary: summary } };
+      // Local fallback in case server/db write is delayed
+      try { localStorage.setItem(`reportLocal:${id}`, JSON.stringify({ meta: { id, ...(payload.meta || {}) }, turns: mapped })); } catch {}
       pendingSaveRef.current = payload;
       let ok = false;
       for (let attempt = 1; attempt <= 3 && !ok; attempt++) {

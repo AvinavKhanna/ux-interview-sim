@@ -1,6 +1,7 @@
 ﻿import type { PersonaSummary } from "@/types/persona";
 export type TechLevel = "low" | "medium" | "high";
 export type Personality = "warm" | "neutral" | "reserved";
+type Attitude = "impatient" | "friendly" | "angry" | "none";
 
 export type PersonaKnobs = {
   age: number;
@@ -15,6 +16,10 @@ export type PersonaKnobs = {
   cautiousness?: number; // 0..1
   boundaries?: string[];
   trustWarmupTurns?: number;
+  // Newly added realism knobs
+  patience?: number; // 0..1 (lower means more impatient)
+  engagement?: number; // 0..1 (higher means more likely to ask questions back)
+  attitude?: Attitude; // high-level behavioral stance
 };
 
 // Use robust splitting without fragile inline regex literals.
@@ -77,6 +82,12 @@ export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs
       : persLower.includes('reserved') || persLower.includes('quiet') || persLower.includes('guarded') || persLower.includes('impatient') || persLower.includes('angry')
       ? 'reserved'
       : 'neutral';
+    const attitude: Attitude = (() => {
+      if (persLower.includes('angry') || persLower.includes('always angry')) return 'angry';
+      if (persLower.includes('impatient') || persLower.includes('short-tempered')) return 'impatient';
+      if (persLower.includes('friendly') || persLower.includes('warm')) return 'friendly';
+      return 'none';
+    })();
     const traits: string[] = [];
     if (input.occupation) traits.push(input.occupation);
     if (Array.isArray(input.painPoints)) traits.push(...input.painPoints);
@@ -86,6 +97,8 @@ export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs
     const voiceConfigId = mapVoiceId(bucket, personality, undefined);
     const speechRate = age >= 60 ? 0.9 : 1.0;
     const turnTaking = { maxSeconds: 8, interruptOnVoice: true };
+    const patience = attitude === 'impatient' ? 0.2 : 0.6;
+    const engagement = attitude === 'friendly' ? 0.8 : 0.4;
     return {
       age,
       traits,
@@ -106,6 +119,9 @@ export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs
         'company name',
       ],
       trustWarmupTurns: 4,
+      patience,
+      engagement,
+      attitude,
     };
   }
   const tech = input.techFamiliarity ?? "medium";
@@ -128,6 +144,16 @@ export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs
     "company name",
   ];
   const trustWarmupTurns = 4;
+  const persLower = String(pers || '').toLowerCase();
+  const attitude: Attitude = persLower.includes('angry')
+    ? 'angry'
+    : persLower.includes('impatient')
+    ? 'impatient'
+    : persLower.includes('friendly') || persLower.includes('warm')
+    ? 'friendly'
+    : 'none';
+  const patience = attitude === 'impatient' ? 0.2 : 0.6;
+  const engagement = attitude === 'friendly' ? 0.8 : 0.4;
 
   return {
     age: input.age,
@@ -141,6 +167,9 @@ export function deriveInitialKnobs(input: InputA | PersonaSummary): PersonaKnobs
     cautiousness,
     boundaries,
     trustWarmupTurns,
+    patience,
+    engagement,
+    attitude,
   };
 }
 
@@ -182,6 +211,9 @@ export function buildPrompt(args: {
   if (Array.isArray(personaKnobs.traits)) hints.push(`traits: ${personaKnobs.traits.join(', ') || 'none'}`);
   hints.push(`openness: ${typeof personaKnobs.openness === 'number' ? personaKnobs.openness : 0.5}`);
   hints.push(`cautiousness: ${typeof personaKnobs.cautiousness === 'number' ? personaKnobs.cautiousness : 0.6}`);
+  if (typeof personaKnobs.patience === 'number') hints.push(`patience: ${personaKnobs.patience}`);
+  if (typeof personaKnobs.engagement === 'number') hints.push(`engagement: ${personaKnobs.engagement}`);
+  if (personaKnobs.attitude && personaKnobs.attitude !== 'none') hints.push(`attitude: ${personaKnobs.attitude}`);
   hints.push(
     `boundaries: ${(
       personaKnobs.boundaries && personaKnobs.boundaries.length
@@ -224,12 +256,34 @@ export function buildPrompt(args: {
     `- Do NOT start the conversation. Wait for the interviewer to begin.`,
     `- Enforce turn-taking: stop speaking immediately if the interviewer starts talking.`,
     `- Speak naturally with brief hesitations and emotions appropriate for the personality.`,
-    `- Keep answers ~2-5 sentences unless the interviewer probes for more.`,
+    `- Disclosure pacing:`,
+    `  • Early phase (first ${typeof personaKnobs.trustWarmupTurns === 'number' ? personaKnobs.trustWarmupTurns : 4} interviewer turns): keep answers short (1–2 sentences), do not volunteer extra information; prefer one clarifying question first.`,
+    `  • Mid phase (next ${typeof personaKnobs.trustWarmupTurns === 'number' ? personaKnobs.trustWarmupTurns : 4} turns): moderate openness (2–3 sentences); reveal small details when asked.`,
+    `  • Late phase (after that): more open if asked (up to 3–5 sentences), still avoid specific sensitive details.`,
+    `- When cautiousness is high, be extra brief early on and ask for clarification rather than answering broadly.`,
     `- If confused, ask for clarification rather than inventing details.`,
+    ...(personaKnobs.attitude === 'impatient'
+      ? [
+          `- Impatient tone: keep answers short (1-2 sentences), slightly rushed.`,
+          `- If questions are long-winded or repetitive, briefly ask: "How much longer?" once in a polite, terse way.`,
+        ]
+      : []),
+    ...(personaKnobs.attitude === 'friendly'
+      ? [
+          `- Friendly tone: warm, collaborative language.`,
+          `- Occasionally ask one brief question back to build rapport (e.g., "Does that help?" or "Would you like an example?").`,
+        ]
+      : []),
+    ...(personaKnobs.attitude === 'angry'
+      ? [
+          `- Angry/irritated tone: curt, consistent frustration. Avoid friendliness.`,
+          `- If interviewer uses disrespectful language (swearing or aggressive tone), state a boundary and consider ending the interview (e.g., "I don't feel comfortable continuing.").`,
+        ]
+      : []),
     `Anti-fabrication and sensitivity:`,
     `- Never invent specific facts (schools, companies, dates, addresses). If not known, say you're not sure and ask a clarifying question.`,
     `- If a requested detail is not provided in Persona context, do not invent it; ask a clarifying question.`,
-    `- For sensitive topics in your boundaries list, be brief/hesitant or defer unless rapport is established.`,
+    `- For sensitive topics in your boundaries list, be brief/hesitant or defer unless rapport is established. Do not volunteer these unless asked directly after the warm-up phase.`,
     `- Use light hesitation ("uh...", "I'm not sure") when a question is sensitive or when cautiousness is high.`,
     `- Increase openness gradually over the first ${typeof personaKnobs.trustWarmupTurns === 'number' ? personaKnobs.trustWarmupTurns : 4} turns.`,
   ].join('\n');

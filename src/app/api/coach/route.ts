@@ -8,6 +8,7 @@ type SessionCounters = {
   lastHintAt: number;
   windowStart: number;
   countInWindow: number;
+  questionsSeen: number; // approximate phase of interview
 };
 
 const counters = new Map<string, SessionCounters>();
@@ -23,7 +24,7 @@ function resolveSessionId(req: Request): string {
 
 function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0 };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0 };
   if (now - c.lastHintAt < policy.minGapMs) return true;
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
@@ -35,13 +36,20 @@ function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
 
 function noteHint(sessionId: string) {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0 };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0 };
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
     c.countInWindow = 0;
   }
   c.lastHintAt = now;
   c.countInWindow += 1;
+  counters.set(sessionId, c);
+}
+
+function noteQuestion(sessionId: string) {
+  const now = Date.now();
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0 };
+  c.questionsSeen += 1;
   counters.set(sessionId, c);
 }
 
@@ -60,19 +68,40 @@ function last(strs: string[], n: number): string[] {
 function heuristicCoach(sample: CoachSample, policy: CoachPolicy): CoachHint | null {
   const q = (sample.question || "").trim();
   const s = q.toLowerCase();
-  if (isGreeting(q, policy)) return null;
+  if (isGreeting(q, policy)) {
+    // Treat richer greetings as rapport-building instead of suppressing
+    if (/\bhow are you( doing)?\b|\bhow'?s your (day|week)\b|\bthanks\b|\bappreciate\b/.test(s)) {
+      return { kind: "rapport", text: "Good rapport building." };
+    }
+    return null;
+  }
+
+  // rapport building recognition (non-greeting phrasing)
+  if (/\bthanks for (joining|taking the time)\b|\bappreciate you being here\b/.test(s)) {
+    return { kind: "rapport", text: "Good rapport building." };
+  }
 
   // boundary check
   const sensitive = /(income|salary|address|medical|religion|school|company)/.test(s);
   const specific = /(which|what|where|who)/.test(s);
   if (sensitive && specific) {
-    return { kind: "boundary", text: "Avoid asking for specific personal details. Reframe more generally or defer." };
+    return { kind: "boundary", text: "That may feel uncomfortable for a persona. Reframe or avoid specifics." };
+  }
+
+  // tone / disrespect detection
+  if (/(\bfuck\b|\bshit\b|\bdumb\b|\bstupid\b|\bidiot\b|\bbitch\b|\bbastard\b)/.test(s)) {
+    return { kind: "boundary", text: "Adjust tone, this could harm the interview." };
+  }
+
+  // fact-checking praise
+  if (/\bjust to confirm\b|\bdid i get that right\b|\byou said\b|\byou mentioned\b|\bto clarify\b|\blet me make sure\b/.test(s)) {
+    return { kind: "praise", text: "Good fact-checking." };
   }
 
   // clarify check (leading or compound question)
   const sLead = s.replace(/^(and|so|well|uh|um|ok|okay|hmm)[,\s-]+/i, "");
-  if (/don\'t you think|wouldn\'t you say/.test(sLead) || /\?\s*and\s+/.test(q) || /\band\b.+\?\s*$/.test(q)) {
-    return { kind: "clarify", text: "Try a single, neutral question. Split long questions." };
+  if (/don\'t you think|wouldn\'t you say/.test(sLead) || /\?\s*and\s+/.test(q) || /\band\b.+\?\s*$/.test(q) || /\bwhat\b[^?]+\band\b[^?]+\?/.test(sLead)) {
+    return { kind: "clarify", text: "Good to split this into two questions." };
   }
 
   // praise for good openers (allow light fillers at start)
@@ -94,6 +123,128 @@ function heuristicCoach(sample: CoachSample, policy: CoachPolicy): CoachHint | n
   }
 
   return null;
+}
+
+// --- New semantic analyzer for richer, contextual feedback ---
+function extractTopics(text: string, max = 2): string[] {
+  const stop = new Set(['the','and','that','this','with','have','your','about','just','like','really','very','kind','okay','yeah','you','are','was','were','will','would','could','should','they','them','their','there','i','me','my','we','our']);
+  const words = String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(w=>w && w.length>=4 && !stop.has(w));
+  const freq: Record<string, number> = {};
+  for (const w of words) freq[w] = (freq[w]||0)+1;
+  return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,max).map(([w])=>w);
+}
+
+function analyzeIntent(question: string) {
+  const s = question.toLowerCase().trim();
+  if (/(before we wrap|any final|last question|to close|to summarize|summary)/.test(s)) return 'closing';
+  if (/^\s*(how|what|why|describe|tell me|walk me through|could you explain)\b/.test(s) || /\?$/.test(s)) return 'probing';
+  if (/(just to confirm|to clarify|so you'?re saying|did i get (this|that) right)/.test(s)) return 'factcheck';
+  if (/(hi|hello|hey|how are you|thanks|appreciate)/.test(s)) return 'rapport';
+  return 'other';
+}
+
+function analyzeTone(question: string) {
+  const s = question.toLowerCase();
+  const warm = /(please|thanks|could you|would you|if you don't mind)/.test(s);
+  const rushed = /(quick|real quick|just|now)/.test(s) || /!!|\?\?/.test(question);
+  const direct = /(tell me|give me|i need|explain)/.test(s);
+  const insensitive = /(why didn't you|you should have|that's wrong)/.test(s);
+  return { warm, rushed, direct, insensitive };
+}
+
+function analyzePersonaReaction(lastAssistant: string) {
+  const t = String(lastAssistant || '');
+  const short = t.trim().split(/\s+/).length < 8;
+  const guarded = short || /(not sure|prefer not|maybe|depends|idk|i don't know)/i.test(t);
+  const stressed = /(stress|overwhelm|anxious|hard|frustrat|tired|busy)/i.test(t);
+  const open = t.split(/\s+/).length > 25 || /(happy to|i usually|i often|for example)/i.test(t);
+  return { guarded, stressed, open };
+}
+
+function isBenignAnd(question: string) {
+  // Allow simple paired asks like "name and age", "pros and cons"
+  const s = question.toLowerCase();
+  return /(name and age|pros and cons|time and place|when and where)/.test(s);
+}
+
+function hasDoubleBarrel(question: string) {
+  const s = question.toLowerCase();
+  const multiQ = (question.match(/\?/g) || []).length >= 2;
+  const andJoin = /\b(and|&){1}\b/.test(s) && /(how|what|why|is|are|do|did|can|will|have|has|was|were)\b.*\b(and)\b.*(how|what|why|is|are|do|did|can|will|have|has|was|were)\b/.test(s);
+  return (multiQ || andJoin) && !isBenignAnd(s);
+}
+
+function improvePhrasing(intent: string, topics: string[], tone: ReturnType<typeof analyzeTone>) {
+  const ex: string[] = [];
+  const topic = topics[0] || 'that';
+  if (intent === 'probing') {
+    ex.push(`Could you share a specific example of ${topic}?`);
+    ex.push(`What made ${topic} challenging for you recently?`);
+  } else if (intent === 'factcheck') {
+    ex.push(`Just to confirm, did I capture this right about ${topic}?`);
+    ex.push(`Am I understanding correctly that ${topic} is the main issue?`);
+  } else if (intent === 'rapport') {
+    ex.push(`How's your day going so far?`);
+    ex.push(`Before we start, anything you'd like me to know?`);
+  } else if (intent === 'closing') {
+    ex.push(`Is there anything important we didn't cover today?`);
+    ex.push(`If you could change one thing about ${topic}, what would it be?`);
+  } else {
+    ex.push(`Could you walk me through ${topic}?`);
+    ex.push(`What would a better ${topic} look like for you?`);
+  }
+  if (tone.direct && !tone.warm) {
+    // soften a direct tone
+    ex[0] = ex[0].replace(/^/, 'If you’re comfortable, ');
+  }
+  return ex.slice(0,2);
+}
+
+function semanticCoach(sessionId: string, sample: any): CoachHint | null {
+  try {
+    const q = String(sample?.question || '').trim();
+    if (!q) return null;
+    const lastAssist = (sample?.lastAssistTurns || [])[ (sample?.lastAssistTurns?.length || 1) - 1 ] || '';
+    const intent = analyzeIntent(q);
+    const tone = analyzeTone(q);
+    const react = analyzePersonaReaction(lastAssist);
+    const topics = extractTopics(lastAssist, 2);
+
+    const countersState = counters.get(sessionId) || { lastHintAt: 0, windowStart: Date.now(), countInWindow: 0, questionsSeen: 0 };
+    const phase = countersState.questionsSeen < 2 ? 'early' : countersState.questionsSeen < 6 ? 'mid' : 'late';
+
+    let textParts: string[] = [];
+    // Intent framing
+    if (intent === 'rapport' && phase === 'early') {
+      textParts.push("Good rapport building — you’re helping the persona feel at ease.");
+    } else if (intent === 'probing' && topics.length) {
+      textParts.push(`Try following up on what they said about ${topics.join(', ')}.`);
+    } else if (intent === 'closing' && phase !== 'late') {
+      textParts.push("Save closing questions for the end; build depth first.");
+    } else if (intent === 'factcheck') {
+      textParts.push("Good fact-checking to keep details accurate.");
+    }
+
+    // Persona reaction context
+    if (react.stressed) textParts.push("The persona sounds stressed; slow your pace and acknowledge feelings.");
+    else if (react.guarded) textParts.push("The persona seems defensive; consider a more curious, softer phrasing.");
+    else if (react.open && intent !== 'probing') textParts.push("They’re open right now — consider a gentle probe.");
+
+    // Double‑barrel caution, but allow benign pairs
+    if (hasDoubleBarrel(q)) textParts.push("This reads as two questions; ask one at a time to keep them focused.");
+
+    const examples = improvePhrasing(intent, topics, tone);
+    if (examples.length) textParts.push(`Examples: “${examples[0]}”${examples[1] ? ` | “${examples[1]}”` : ''}`);
+
+    // Map to hint kind
+    let kind: CoachHint['kind'] = 'probe';
+    if (intent === 'rapport') kind = 'praise';
+    else if (intent === 'factcheck') kind = 'praise';
+    else if (hasDoubleBarrel(q)) kind = 'clarify';
+    else if (tone.insensitive) kind = 'boundary';
+
+    return { kind, text: textParts.join(' ') };
+  } catch { return null; }
 }
 
 async function maybeLLM(sample: CoachSample): Promise<CoachHint | null> {
@@ -129,11 +280,14 @@ export async function POST(req: Request) {
     const sample = (await req.json().catch(() => ({}))) as CoachSample | any;
     const q = String(sample?.question ?? "");
     if (!q.trim()) return NextResponse.json({ hints: [] } satisfies CoachResponse);
+    noteQuestion(sessionId);
     if (blockedByPolicy(sessionId, policy)) return NextResponse.json({ hints: [] } satisfies CoachResponse);
 
     let hint: CoachHint | null = null;
+    // New semantic analyzer
+    hint = semanticCoach(sessionId, sample);
     // Optional LLM path first
-    hint = await maybeLLM(sample);
+    if (!hint) hint = await maybeLLM(sample);
     if (!hint) hint = heuristicCoach(sample, policy);
 
     if (hint) {

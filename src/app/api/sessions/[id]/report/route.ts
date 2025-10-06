@@ -19,6 +19,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         .maybeSingle();
       if (data) {
         let turns = Array.isArray((data as any).transcript) ? (data as any).transcript as any[] : [];
+        // Fallback: allow transcript saved under feedback JSON
+        if ((!turns || turns.length === 0) && (data as any)?.feedback && Array.isArray((data as any).feedback.transcript)) {
+          turns = (data as any).feedback.transcript as any[];
+        }
         if (!turns || turns.length === 0) {
           try {
             const tr = await sb
@@ -38,7 +42,28 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         const startedAt = Date.parse((data as any).created_at || '') || Date.now();
         const stoppedAt = Date.parse((data as any).ended_at || '') || undefined;
         const personaSummary = (data as any).persona_summary || (data as any)?.feedback?.personaSummary || undefined;
-        report = { meta: { id, startedAt, stoppedAt, personaSummary, durationMs: stoppedAt ? (stoppedAt - startedAt) : undefined }, turns } as SessionReport;
+        // Derive a coarse emotion/tone summary from feedback.emotions if available
+        const emotionSummary = (() => {
+          try {
+            const fb = (data as any)?.feedback;
+            const arr: any[] = Array.isArray(fb?.emotions) ? fb.emotions : [];
+            const counter = new Map<string, { sum: number; n: number }>();
+            for (const evt of arr) {
+              const preds: any[] = (evt?.emotion_predictions || evt?.predictions || []) as any[];
+              for (const p of preds) {
+                const name = String(p?.name || p?.label || '').toLowerCase();
+                const score = Number(p?.score || p?.value || 0);
+                if (!name) continue;
+                const cur = counter.get(name) || { sum: 0, n: 0 };
+                cur.sum += score; cur.n += 1; counter.set(name, cur);
+              }
+            }
+            const items = Array.from(counter.entries()).map(([k, v]) => ({ name: k, avg: v.sum / Math.max(1, v.n) }));
+            items.sort((a, b) => b.avg - a.avg);
+            return items.slice(0, 3).map(x => x.name).join(', ');
+          } catch { return undefined; }
+        })();
+        report = { meta: { id, startedAt, stoppedAt, personaSummary, emotionSummary, durationMs: stoppedAt ? (stoppedAt - startedAt) : undefined }, turns } as SessionReport;
         SessionStore.set(id, report);
       }
     } catch {}

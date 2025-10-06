@@ -81,7 +81,25 @@ Rules:
       ? String((persona as any).system_prompt)
       : derivedPrompt;
 
-    const system = [
+    // Derive attitude rules to reflect persona realism dynamically
+    const personalityLower = String((persona as any)?.personality || '').toLowerCase();
+    const isImpatient = personalityLower.includes('impatient') || personalityLower.includes('short-tempered');
+    const isFriendly = personalityLower.includes('friendly') || personalityLower.includes('warm');
+    const isAngry = personalityLower.includes('angry') || personalityLower.includes('always angry');
+    const attitudeRules = [
+      isImpatient && `Impatient behavior: keep answers short (1-2 sentences), slightly rushed. If the question is long-winded or repetitive, you may ask once: "How much longer?"`,
+      isFriendly && `Friendly behavior: use warm, collaborative tone. Occasionally ask one short question back to build rapport (e.g., "Does that help?", "Would you like an example?").`,
+      isAngry && `Angry behavior: remain curt and irritated. If the interviewer uses disrespectful language (swearing or an aggressive tone), state a boundary and consider ending the interview (e.g., "I don't feel comfortable continuing.").`,
+    ].filter(Boolean).join('\n');
+
+    // Phase-aware disclosure settings derived from current turn count
+    const userTurnCount = history.filter((h) => h.role === 'user').length;
+    const phase = userTurnCount <= 3 ? 'early' : userTurnCount <= 8 ? 'mid' : 'late';
+    const baseMax = isImpatient ? 2 : isFriendly ? 3 : 2;
+    const maxSentences = phase === 'early' ? Math.min(2, baseMax) : phase === 'mid' ? Math.min(3, baseMax + 1) : Math.min(4, baseMax + 2);
+    const phaseRules = `Current phase: ${phase}. Keep replies to <= ${maxSentences} sentences. Do not volunteer extra information in early phase; prefer a brief clarifying question if the question is broad. Avoid sharing sensitive details (income, finances, religion, medical, addresses, exact schools/companies) unless asked directly after rapport is established.`;
+
+    let system = [
       personaContext && `Persona Facts:\n${personaContext}`,
       personaPrompt && `Additional Persona Instructions:\n${personaPrompt}`,
       sessionSummary && `Session Summary (for context):\n${sessionSummary}`,
@@ -94,7 +112,9 @@ Rules:
 - If asked multi‑part questions, address each part directly.`,
     ]
       .filter(Boolean)
-      .join('\n\n');
+      .join('\n\n') + (attitudeRules ? '\n\n' + attitudeRules : '');
+    // Append phase-aware disclosure rules
+    try { if (phaseRules) { system += '\n\n' + phaseRules; } } catch {}
 
     // 3) Ask the model
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
