@@ -48,7 +48,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   const [text, setText] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [emotionFeed, setEmotionFeed] = useState<{ at: number; items: EmotionPair[] }[]>([]);
-  const [coachEnabled, setCoachEnabled] = useState<boolean>(false);
+  // Default ON to make hints visible without extra clicks
+  const [coachEnabled, setCoachEnabled] = useState<boolean>(true);
   const [coachHint, setCoachHint] = useState<string | null>(null);
   const lastCoachAtRef = useRef<number>(0);
   const stoppingRef = useRef(false);
@@ -443,14 +444,22 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       if (!q) return;
 
       const now = Date.now();
-      if (now - lastCoachAtRef.current < 7000) return; // cooldown
+      if (now - lastCoachAtRef.current < 7000) {
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console
+          console.log('[coach] cooldown active');
+        }
+        return;
+      }
 
       const lower = q.toLowerCase();
       const greetings = ["hi","hello","hey","how are you","good morning","good afternoon"];
       const isGreeting = greetings.some((p) => lower === p || lower.startsWith(p + ' '));
       const isRapport = /\bhow are you\b|\bhow'?s your (day|week)\b|\bthanks\b|\bappreciate\b/.test(lower);
-      // Permit richer greetings for rapport hints; still drop very short inputs
-      if (!isRapport && (isGreeting || q.split(/\s+/).length < 2)) return;
+      // Allow anything except a bare one-word greeting
+      if (!isRapport && isGreeting && q.split(/\s+/).length <= 2) {
+        // treat as rapport, but still show a hint so users see Coach working
+      }
 
       lastCoachAtRef.current = now;
 

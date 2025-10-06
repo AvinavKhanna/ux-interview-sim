@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { CoachSample, CoachResponse, CoachPolicy, CoachHint } from "@/types/coach";
+import type { CoachSample, CoachResponse, CoachPolicy, CoachHint, CoachContext, CoachCategory } from "@/types/coach";
 import { DefaultCoachPolicy } from "@/types/coach";
 
 export const dynamic = "force-dynamic";
@@ -122,6 +122,181 @@ function heuristicCoach(sample: CoachSample, policy: CoachPolicy): CoachHint | n
     return { kind: "rapport", text: "Acknowledge and keep a warm tone; reflect back briefly." };
   }
 
+  return null;
+}
+
+// === Lightweight classifiers and context builder (spec-driven) ===
+const ADMIN_RE = /(\bname\b|\bage\b|\bemail\b|\bconsent\b|\brecording\b|\brole\b|\bpronouns?\b)/i;
+const RAPPORT_RE = /(\bhi\b|\bhello\b|\bhey\b|\bthanks\b|\bthank you\b|\bappreciate\b|\bsorry to hear\b|\bthat makes sense\b|\bi hear you\b)/i;
+const FACTCHECK_RE = /(\bjust to confirm\b|\bto clarify\b|\bso (you'?re|you are) saying\b|\bdid i get (this|that) right\b)/i;
+const CLOSED_START_RE = /^(is|are|do|did|does|can|could|will|would|have|has|had|was|were|should|shall)\b/i;
+const OPEN_START_RE = /^(how|what|why|describe|tell me|walk me( through)?|could you explain|can you tell)/i;
+const PROFANITY_RE = /(\bfuck\b|\bshit\b|\basshole\b|\bbitch\b|\bidiot\b|\bstupid\b|\bdumb\b)/i;
+const HOSTILE_RE = /(\bcalm down\b|\bthat'?s (dumb|stupid)\b|\bwhat'?s wrong with you\b|\bthis makes no sense\b)/i;
+const SENSITIVE_RE = /(\bincome\b|\bsalary\b|\bdebt\b|\bcredit (score|card)\b|\bbank(ing)?\b|\bmortgage\b|\brent\b|\bmedical\b|\bill(n|ness)\b|\bdiagnos\w+\b|\btherapy\b|\bfamily\b|\bspouse\b|\bpartner\b|\bkids?\b|\breligion\b)/i;
+
+function normalizeDomain(raw?: string): string {
+  const s = (raw || "").toLowerCase();
+  if (!s) return "general";
+  if (s.includes("bank") || s.includes("fintech") || s.includes("finance")) return "banking";
+  if (s.includes("health")) return "healthcare";
+  if (s.includes("ecommerce") || s.includes("retail") || s.includes("store")) return "ecommerce";
+  if (s.includes("productivity") || s.includes("notes") || s.includes("calendar") || s.includes("tasks")) return "productivity";
+  if (s.includes("education") || s.includes("learning") || s.includes("edtech")) return "education";
+  if (s.includes("travel") || s.includes("flight") || s.includes("hotel")) return "travel";
+  if (s.includes("streaming") || s.includes("media")) return "streaming";
+  if (s.includes("hr") || s.includes("recruit") || s.includes("interview")) return "hr";
+  if (s.includes("dev") || s.includes("api") || s.includes("developer")) return "devtools";
+  return "general";
+}
+
+function adminPairExempt(q: string): boolean {
+  const s = q.toLowerCase();
+  return /\b(name|role)\b\s*(,?\s*(and|&)\s*)\b(age|tenure|pronouns?)\b/.test(s) || /\bage\b\s*(,?\s*(and|&)\s*)\b(pronouns?|role)\b/.test(s);
+}
+
+function detectDoubleBarrel(q: string): boolean {
+  const qMarks = (q.match(/\?/g) || []).length;
+  if (qMarks > 1) return true;
+  if (/\bwhat\b[^?]+\band\b[^?]+\?/.test(q.toLowerCase())) return true;
+  return false;
+}
+
+function classifyType(text: string): CoachContext["type"] {
+  const s = text.trim().toLowerCase();
+  if (!s) return "open";
+  if (ADMIN_RE.test(s)) return "admin";
+  if (FACTCHECK_RE.test(s)) return "factcheck";
+  if (RAPPORT_RE.test(s)) return "rapport";
+  if (OPEN_START_RE.test(s)) return "open";
+  if (CLOSED_START_RE.test(s)) return "closed";
+  if (s.endsWith("?") && !CLOSED_START_RE.test(s)) return "open";
+  return "open";
+}
+
+function buildContextFromSample(sessionId: string, sample: any): CoachContext {
+  const q = String(sample?.question || "");
+  const nowSec = Math.floor(Date.now() / 1000);
+  const lastAssistText = Array.isArray(sample?.lastAssistTurns) && sample.lastAssistTurns.length
+    ? String(sample.lastAssistTurns[sample.lastAssistTurns.length - 1])
+    : "";
+  const lastUserText = Array.isArray(sample?.lastUserTurns) && sample.lastUserTurns.length
+    ? String(sample.lastUserTurns[sample.lastUserTurns.length - 1])
+    : "";
+
+  const ctx: CoachContext = {
+    text: q,
+    ts: typeof sample?.context?.ts === 'number' ? sample.context.ts : nowSec,
+    lastAssistant: sample?.context?.lastAssistant ?? (lastAssistText ? { text: lastAssistText, wordCount: lastAssistText.split(/\s+/).filter(Boolean).length, ts: 0 } : null),
+    lastUser: sample?.context?.lastUser ?? (lastUserText ? { text: lastUserText, ts: 0 } : null),
+    persona: sample?.context?.persona ?? {
+      age: sample?.personaSummary?.age,
+      personality: sample?.personaSummary?.personality,
+      traits: sample?.personaSummary?.traits || [],
+      instructions: sample?.personaSummary?.extraInstructions || (sample?.personaKnobs ? JSON.stringify(sample.personaKnobs) : undefined),
+    },
+    domain: normalizeDomain(sample?.context?.domain || sample?.domain || sample?.project?.domain || (Array.isArray(sample?.project?.domain_tags) ? String(sample.project.domain_tags[0] || '') : 'general')),
+    type: sample?.context?.type || classifyType(q),
+    tone: sample?.context?.tone || { hostile: HOSTILE_RE.test(q), profanity: PROFANITY_RE.test(q), impatient: false },
+    structure: sample?.context?.structure || { doubleBarrel: detectDoubleBarrel(q), overlyLong: q.split(/\s+/).length > 28 },
+  };
+  try {
+    if (ctx.lastAssistant && typeof ctx.lastAssistant.ts === 'number' && ctx.lastAssistant.ts > 0 && Math.abs(ctx.ts - ctx.lastAssistant.ts) < 2) {
+      ctx.tone.impatient = true;
+    }
+  } catch {}
+  if (ctx.type === 'admin' && adminPairExempt(q)) ctx.structure.doubleBarrel = false;
+  return ctx;
+}
+
+function domainProbeKeywords(domain: string): string[] {
+  switch (domain) {
+    case 'banking': return ['fees', 'security', 'bill pay', 'alerts'];
+    case 'ecommerce': return ['checkout', 'returns', 'shipping', 'search', 'reviews'];
+    case 'productivity': return ['tasks', 'calendar', 'notes', 'collaboration', 'sync'];
+    case 'healthcare': return ['appointments', 'billing', 'records', 'privacy', 'insurance'];
+    case 'education': return ['assignments', 'grading', 'feedback', 'progress', 'mobile'];
+    case 'travel': return ['booking', 'check-in', 'cancellations', 'loyalty', 'alerts'];
+    case 'streaming': return ['recommendations', 'search', 'quality', 'downloads', 'subscriptions'];
+    case 'hr': return ['feedback', 'evaluations', 'payroll', 'time off'];
+    case 'devtools': return ['docs', 'errors', 'auth', 'latency', 'sdk'];
+    default: return ['examples', 'clarity', 'search', 'navigation', 'notifications'];
+  }
+}
+
+function buildSuggestedQuestion(ctx: CoachContext, lastAssist: string | undefined): string | null {
+  const lower = (ctx.text || '').toLowerCase();
+  const kw = domainProbeKeywords(ctx.domain);
+  const topic = kw[0] || 'that';
+  const shortAssist = (lastAssist || '').split(/\s+/).filter(Boolean).length < 12;
+  if (ctx.type === 'closed') {
+    // rewrite closed → open
+    const rewrite = ctx.text.replace(/^(is|are|do|did|does|can|could|will|would|have|has|had|was|were|should|shall)\b/i, 'How').replace(/\?\s*$/, '').trim();
+    return rewrite ? `${rewrite}?` : `How do you keep track of ${topic}?`;
+  }
+  if (ctx.type === 'open' && shortAssist) {
+    return `Could you share a specific example about ${topic}?`;
+  }
+  if (ctx.type === 'rapport') {
+    return `What would make ${topic} easier for you?`;
+  }
+  if (ctx.type === 'factcheck') {
+    return `Am I understanding correctly that ${topic} is the main pain?`;
+  }
+  // default follow-up
+  return `What made ${topic} difficult recently?`;
+}
+
+function chooseHintFromContext(ctx: CoachContext): CoachHint | null {
+  const s = ctx.text.trim();
+  const lower = s.toLowerCase();
+  const category = (c: CoachCategory) => c;
+  const lastAssistText = ctx.lastAssistant?.text || '';
+  // Tone safety
+  if (ctx.tone.hostile || ctx.tone.profanity) {
+    return { kind: 'boundary', category: category('Tone'), text: 'Tone check: soften language—this can shut the participant down. Try acknowledging and refocusing.' };
+  }
+  if (ctx.tone.impatient) {
+    return { kind: 'boundary', category: category('Tone'), text: 'Let them finish. Pausing 1–2s often yields richer details.' };
+  }
+  // Boundary & ethics
+  if (SENSITIVE_RE.test(lower) && !/(so (we|I) can|to help|because)/i.test(lower)) {
+    return { kind: 'boundary', category: category('Boundary'), text: "This may feel personal—frame the 'why' first, e.g., 'So we can tailor the flow, could you…'" };
+  }
+  // Follow-up discipline
+  const shortAssist = ctx.lastAssistant && ctx.lastAssistant.wordCount > 0 && ctx.lastAssistant.wordCount < 12;
+  const notFollowUp = ctx.type !== 'factcheck' && ctx.type !== 'rapport' && ctx.type !== 'admin';
+  if (shortAssist && notFollowUp) {
+    const suggestion = buildSuggestedQuestion(ctx, lastAssistText);
+    return { kind: 'probe', category: category('Follow-up'), text: `They gave a short answer—follow up on something concrete. Suggested: "${suggestion}"` };
+  }
+  // Question craft
+  if (ctx.structure.doubleBarrel && ctx.type !== 'admin') {
+    const m = /(.+?)\band\b(.+?)\?\s*$/.exec(lower);
+    if (m) {
+      const X = m[1].trim();
+      const Y = m[2].trim();
+      return { kind: 'clarify', category: category('Craft'), text: `Split this into two: one on '${X}', then a follow-up on '${Y}'.` };
+    }
+    return { kind: 'clarify', category: category('Craft'), text: 'Split this into two focused questions.' };
+  }
+  if (ctx.type === 'closed' && ctx.type !== 'factcheck' && ctx.type !== 'admin') {
+    const suggestion = buildSuggestedQuestion(ctx, lastAssistText) || 'How do you handle this?';
+    return { kind: 'probe', category: category('Craft'), text: `Ask open instead of yes/no. Suggested: "${suggestion}"` };
+  }
+  // Reinforcement
+  if (ctx.type === 'rapport') {
+    const suggestion = buildSuggestedQuestion(ctx, lastAssistText);
+    return { kind: 'rapport', category: category('Reinforcement'), text: `Nice rapport. When ready, pivot to specifics. Suggested: "${suggestion}"` };
+  }
+  if (ctx.type === 'open') {
+    const suggestion = shortAssist ? buildSuggestedQuestion(ctx, lastAssistText) : null;
+    if (suggestion) return { kind: 'probe', category: category('Follow-up'), text: `Good open. Keep them concrete. Suggested: "${suggestion}"` };
+    return { kind: 'praise', category: category('Reinforcement'), text: 'Good open. Give space, then ask for an example.' };
+  }
+  // Domain-specific probe fallback
+  const domainProbe = domainProbeKeywords(ctx.domain)[0];
+  if (domainProbe) return { kind: 'probe', category: category('Follow-up'), text: `Consider a focused probe on "${domainProbe}".` };
   return null;
 }
 
@@ -277,20 +452,46 @@ export async function POST(req: Request) {
   const sessionId = resolveSessionId(req);
   const policy = DefaultCoachPolicy;
   try {
-    const sample = (await req.json().catch(() => ({}))) as CoachSample | any;
-    const q = String(sample?.question ?? "");
+    const sample = (await req.json().catch(() => ({}))) as (CoachSample & { context?: CoachContext }) | any;
+    const q = String(sample?.question ?? sample?.context?.text ?? "");
     if (!q.trim()) return NextResponse.json({ hints: [] } satisfies CoachResponse);
     noteQuestion(sessionId);
     if (blockedByPolicy(sessionId, policy)) return NextResponse.json({ hints: [] } satisfies CoachResponse);
 
-    let hint: CoachHint | null = null;
-    // New semantic analyzer
-    hint = semanticCoach(sessionId, sample);
-    // Optional LLM path first
+    // Prefer client-provided context; otherwise derive it server-side
+    const ctx = sample?.context && sample.context.text ? (sample.context as CoachContext) : buildContextFromSample(sessionId, sample);
+
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[coach:context]', {
+        text: ctx.text,
+        ts: ctx.ts,
+        lastAssistant: ctx.lastAssistant ? { wordCount: ctx.lastAssistant.wordCount, ts: ctx.lastAssistant.ts } : null,
+        lastUser: ctx.lastUser ? { ts: ctx.lastUser.ts } : null,
+        domain: ctx.domain,
+        type: ctx.type,
+        tone: ctx.tone,
+        structure: ctx.structure,
+      });
+    }
+
+    let hint: CoachHint | null = chooseHintFromContext(ctx);
+    // Fallbacks to existing logic if none selected
+    if (!hint) hint = semanticCoach(sessionId, sample);
     if (!hint) hint = await maybeLLM(sample);
     if (!hint) hint = heuristicCoach(sample, policy);
 
     if (hint) {
+      // Backfill category for legacy hints
+      if (!(hint as any).category) {
+        const kind = (hint as any).kind as CoachHint['kind'];
+        const cat: CoachCategory = kind === 'boundary' ? 'Tone' : kind === 'clarify' ? 'Craft' : (kind === 'praise' || kind === 'rapport') ? 'Reinforcement' : 'Follow-up';
+        (hint as any).category = cat;
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('[coach:hint]', { category: (hint as any).category, kind: (hint as any).kind, text: hint.text });
+      }
       noteHint(sessionId);
       return NextResponse.json({ hints: [hint] } satisfies CoachResponse);
     }

@@ -52,7 +52,7 @@ export function mockSuggestPersonas(p: ProjectInfo): Persona[] {
         age: 46,
         occupation: 'Retail manager',
         techFamiliarity: 'medium',
-        painPoints: ['POS uptime', 'Staff onboarding'],
+        painPoints: ['POS uptime', 'Staff training'],
         personality: 'analytical',
         created_at: new Date().toISOString(),
       },
