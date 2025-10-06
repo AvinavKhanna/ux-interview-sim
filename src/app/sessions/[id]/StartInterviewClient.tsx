@@ -51,6 +51,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
   // Default ON to make hints visible without extra clicks
   const [coachEnabled, setCoachEnabled] = useState<boolean>(true);
   const [coachHint, setCoachHint] = useState<string | null>(null);
+  const [coachSeverity, setCoachSeverity] = useState<'info'|'nudge'|'important'>('nudge');
   const lastCoachAtRef = useRef<number>(0);
   const stoppingRef = useRef(false);
   const [stopping, setStopping] = useState(false);
@@ -444,6 +445,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       if (!q) return;
 
       const now = Date.now();
+      // clear previous hint on new question
+      setCoachHint(null);
       if (now - lastCoachAtRef.current < 7000) {
         if (process.env.NODE_ENV !== 'production') {
           // eslint-disable-next-line no-console
@@ -487,15 +490,15 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
         .then((r) => (r.ok ? r.json() : null))
         .then((j: CoachResponse | null) => {
           // Prefer mentor-style tip if present
-          const tip = (j as any)?.tip as { label: string; message: string; suggestion?: string } | undefined;
+          const tip = (j as any)?.tip as { label: string; message: string; suggestion?: string; severity?: 'info'|'nudge'|'important' } | undefined;
           if (tip && tip.message) {
             const composed = tip.suggestion ? `${tip.message} ${tip.suggestion}` : tip.message;
             if (process.env.NODE_ENV !== 'production') {
               // eslint-disable-next-line no-console
               console.log('[coach:tip]', tip);
             }
+            setCoachSeverity(tip.severity || 'nudge');
             setCoachHint(composed);
-            window.setTimeout(() => setCoachHint(null), 6000);
             return;
           }
           const hint = j?.hints?.[0];
@@ -504,8 +507,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
               // eslint-disable-next-line no-console
               console.log('[coach:hint]', `kind=${hint.kind}`, `text="${hint.text}"`);
             }
+            setCoachSeverity('nudge');
             setCoachHint(String(hint.text));
-            window.setTimeout(() => setCoachHint(null), 6000);
           } else {
             // Local heuristic fallback to ensure a visible hint when server gives none
             const lower = q.toLowerCase();
@@ -523,8 +526,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             else if (rude) text = 'Adjust tone, this could harm the interview.';
             else if (open) text = "Nice open question. Give space and follow up gently.";
             else text = "Consider a soft probe: 'Could you share a specific example?'";
+            setCoachSeverity('info');
             setCoachHint(text);
-            window.setTimeout(() => setCoachHint(null), 6000);
           }
         })
         .catch(() => undefined);
@@ -1027,7 +1030,7 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
 
         <div className="rounded border p-0 md:col-span-2 flex flex-col">
           {coachEnabled && coachHint ? (
-            <div className="px-4 py-2 text-xs border-b bg-amber-50 text-amber-800">
+            <div className={"px-4 py-2 text-xs border-b " + (coachSeverity === 'important' ? 'bg-orange-100 text-orange-900' : coachSeverity === 'nudge' ? 'bg-amber-50 text-amber-800' : 'bg-gray-50 text-gray-700')}>
               <span className="font-medium mr-1">Coach:</span>
               <span>{coachHint}</span>
             </div>

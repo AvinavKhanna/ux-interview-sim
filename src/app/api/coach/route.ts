@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { CoachSample, CoachResponse, CoachPolicy, CoachHint, CoachContext, CoachCategory } from "@/types/coach";
+import { getCoachTip } from "@/lib/coach/llmCoach";
 import { DefaultCoachPolicy } from "@/types/coach";
 
 export const dynamic = "force-dynamic";
@@ -525,7 +526,7 @@ export async function POST(req: Request) {
     const intents = classifyIntentPrimary(ctx.text);
 
     // Decide mentor-style tip (non-breaking, additive)
-    let tip: { label: string; message: string; suggestion?: string } | null = null;
+    let tip: { label: string; message: string; suggestion?: string; severity?: string } | null = null;
     const lastAssist = ctx.lastAssistant?.text || '';
     const lastAssistWords = ctx.lastAssistant?.wordCount || lastAssist.split(/\s+/).length;
     const topics = extractTopics(lastAssist, 1);
@@ -536,31 +537,48 @@ export async function POST(req: Request) {
     const labelNotRecent = (label: string) => lastLabels.indexOf(label) === -1;
 
     if (!shouldSuppressTip(intents.primary, phase)) {
+      // Try LLM mentor tip first (repair-only, additive). Build a compact recent history.
+      try {
+        const recent: { speaker: 'interviewer'|'participant'; text: string }[] = [];
+        const la: string[] = Array.isArray(sample?.lastAssistTurns) ? sample.lastAssistTurns.slice(-4) : [];
+        const lu: string[] = Array.isArray(sample?.lastUserTurns) ? sample.lastUserTurns.slice(-4) : [];
+        for (const t of la) recent.push({ speaker: 'participant', text: String(t) });
+        for (const t of lu) recent.push({ speaker: 'interviewer', text: String(t) });
+        recent.push({ speaker: 'interviewer', text: q });
+        const personaBrief = (() => {
+          try { return JSON.stringify(sample?.personaSummary || sample?.personaKnobs || {}, null, 0).slice(0, 400); } catch { return undefined; }
+        })();
+        const llmTip = await getCoachTip({ turns: recent as any, currentInterviewerText: q, personaBrief });
+        if (llmTip && labelNotRecent(llmTip.label)) {
+          tip = { label: llmTip.label, message: llmTip.message, suggestion: llmTip.suggestion, severity: llmTip.severity };
+        }
+      } catch {}
+
       // Emotion-aware de-escalate
-      if (react.stressed && labelNotRecent('De-escalate')) {
+      if (!tip && react.stressed && labelNotRecent('De-escalate')) {
         tip = formatTip('De-escalate', "I'm hearing some frustration. That sounds tough—what led to that?");
       }
       // Sensitive ask
-      else if (intents.primary === 'sensitive' && labelNotRecent('Sensitive')) {
+      else if (!tip && intents.primary === 'sensitive' && labelNotRecent('Sensitive')) {
         tip = formatTip('Sensitive', 'This can be personal. Give a reason and an opt-out.', 'To tailor the study, could you share…? Totally fine to skip.');
       }
       // Follow-up opportunity: long answer but current turn not follow-up
-      else if (lastAssistWords >= 18 && intents.primary !== 'follow_up' && labelNotRecent('Follow-up chance')) {
+      else if (!tip && lastAssistWords >= 18 && intents.primary !== 'follow_up' && labelNotRecent('Follow-up chance')) {
         tip = formatTip('Follow-up chance', `There’s something to unpack there. Earlier you mentioned ${topic}—what made that difficult?`);
       }
       // Closed → Open (and not a clarifying confirm)
-      else if (intents.primary === 'closed_question' && labelNotRecent('Closed → Open')) {
+      else if (!tip && intents.primary === 'closed_question' && labelNotRecent('Closed → Open')) {
         const suggestion = buildSuggestedQuestion(ctx, lastAssist) || `How did you handle ${topic}?`;
         tip = formatTip('Closed → Open', 'This may limit detail. Try:', suggestion);
       }
       // Clarify gently
-      else if (hasDoubleBarrel(ctx.text) && labelNotRecent('Clarify gently')) {
+      else if (!tip && hasDoubleBarrel(ctx.text) && labelNotRecent('Clarify gently')) {
         tip = formatTip('Clarify gently', `Quick check: When you say it, do you mean ${topic} A or B?`);
       }
       // Rapport → Specifics (mid/late only)
-      else if (intents.primary === 'greeting' || intents.primary === 'scope_setting') {
+      else if (!tip && (intents.primary === 'greeting' || intents.primary === 'scope_setting')) {
         // no tip
-      } else if ((intents.primary === 'open_question' || intents.primary === 'bio_setup') && phase !== 'early' && labelNotRecent('Rapport → Specifics')) {
+      } else if (!tip && (intents.primary === 'open_question' || intents.primary === 'bio_setup') && phase !== 'early' && labelNotRecent('Rapport → Specifics')) {
         tip = formatTip('Rapport → Specifics', 'Nice start. When you’re ready, zoom in:', `What’s the most frustrating part of ${topic}?`);
       }
     }
