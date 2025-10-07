@@ -11,6 +11,9 @@ type SessionCounters = {
   countInWindow: number;
   questionsSeen: number; // approximate phase of interview
   lastTipLabels?: string[]; // anti-spam: prevent repeats
+  lastSuggestion?: string;
+  lastSuggestionAt?: number;
+  affirmedOnce?: boolean;
 };
 
 const counters = new Map<string, SessionCounters>();
@@ -26,7 +29,7 @@ function resolveSessionId(req: Request): string {
 
 function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] } as SessionCounters;
   if (now - c.lastHintAt < policy.minGapMs) return true;
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
@@ -38,7 +41,7 @@ function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
 
 function noteHint(sessionId: string, label?: string) {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] } as SessionCounters;
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
     c.countInWindow = 0;
@@ -55,7 +58,7 @@ function noteHint(sessionId: string, label?: string) {
 
 function noteQuestion(sessionId: string) {
   const now = Date.now();
-  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] };
+  const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] } as SessionCounters;
   c.questionsSeen += 1;
   counters.set(sessionId, c);
 }
@@ -121,7 +124,7 @@ function heuristicCoach(sample: CoachSample, policy: CoachPolicy): CoachHint | n
   const shortAssist = lastAssist.trim().length > 0 && lastAssist.trim().length < 80;
   const openEnded = /\b(how|why|what|tell me about|describe)\b/.test(sLead);
   if (openEnded) {
-    return { kind: "probe", text: "Consider a soft probe: 'Could you share a specific example?'" };
+    return { kind: "probe", text: "Ask for a specific example." };
   }
 
   // rapport (default nudge)
@@ -141,6 +144,33 @@ const OPEN_START_RE = /^(how|what|why|describe|tell me|walk me( through)?|could 
 const PROFANITY_RE = /(\bfuck\b|\bshit\b|\basshole\b|\bbitch\b|\bidiot\b|\bstupid\b|\bdumb\b)/i;
 const HOSTILE_RE = /(\bcalm down\b|\bthat'?s (dumb|stupid)\b|\bwhat'?s wrong with you\b|\bthis makes no sense\b)/i;
 const SENSITIVE_RE = /(\bincome\b|\bsalary\b|\bdebt\b|\bcredit (score|card)\b|\bbank(ing)?\b|\bmortgage\b|\brent\b|\bmedical\b|\bill(n|ness)\b|\bdiagnos\w+\b|\btherapy\b|\bfamily\b|\bspouse\b|\bpartner\b|\bkids?\b|\breligion\b)/i;
+
+// Whitelist common scoping asks (must not be flagged)
+function isWhitelistedScoping(q: string): boolean {
+  const s = q.toLowerCase();
+  if (/(\bhi\b|\bhello\b|\bhey\b|how are you|thanks|thank you|appreciate)/.test(s)) return true; // greetings
+  if (/(\bname\b|\bage\b|\bpronouns?\b|\brole\b|\boccupation\b|\btitle\b)/.test(s)) return true; // bio basics
+  if (/(have you used|prior experience|used.*before|familiar with (the )?(domain|topic|type))/i.test(s)) return true; // prior domain use
+  if (/(consent|recording|on the record|off the record)/.test(s)) return true; // consent/recording
+  if (/(availability|time work for you|schedule|timing)/.test(s)) return true; // availability
+  if (/(comfortable|ok if|would you mind)/.test(s)) return true; // comfort level
+  return false;
+}
+
+// Require ≥2 sensitive marker categories before warning
+function countSensitiveMarkers(q: string): number {
+  const s = q.toLowerCase();
+  let n = 0;
+  const money = /(income|salary|debt|credit|mortgage|rent|bank|account (number|no\.)|routing)/.test(s);
+  const health = /(medical|ill(n|ness)|diagnos\w+|therapy|mental health)/.test(s);
+  const identity = /(ssn|social security|passport|national id|password|passcode)/.test(s);
+  const location = /(address|street|zip|postcode|exact (location|address)|where (exactly|do you live))/i.test(s);
+  if (money) n++;
+  if (health) n++;
+  if (identity) n++;
+  if (location) n++;
+  return n;
+}
 
 function normalizeDomain(raw?: string): string {
   const s = (raw || "").toLowerCase();
@@ -301,9 +331,7 @@ function chooseHintFromContext(ctx: CoachContext): CoachHint | null {
     if (suggestion) return { kind: 'probe', category: category('Follow-up'), text: `Good open. Keep them concrete. Suggested: "${suggestion}"` };
     return { kind: 'praise', category: category('Reinforcement'), text: 'Good open. Give space, then ask for an example.' };
   }
-  // Domain-specific probe fallback
-  const domainProbe = domainProbeKeywords(ctx.domain)[0];
-  if (domainProbe) return { kind: 'probe', category: category('Follow-up'), text: `Consider a focused probe on "${domainProbe}".` };
+  // No domain-specific fallback; if nothing triggered, return null
   return null;
 }
 
@@ -367,7 +395,7 @@ function classifyIntentPrimary(s: string): { primary: string; tags: string[] } {
   const isClarify = /(just to confirm|to clarify|did i get (this|that) right|do you mean|when you say)/.test(q);
   const isReflect = /(sounds like|i hear you|that makes sense|i can see|i get that|i understand)/.test(q);
   const isTransition = /(let.?s move on|switch gears|on another note|changing topic|next topic)/.test(q);
-  const isSensitive = /(income|salary|address|password|passcode|medical|bank( details)?|account (number|no\.)|routing|ssn|social security)/.test(q);
+  const isSensitive = (countSensitiveMarkers(q) >= 2) && !isWhitelistedScoping(q);
   const isClosed = /^(is|are|do|did|does|can|could|will|would|have|has|had|was|were|should|shall)\b/.test(q);
   const endsQ = /\?$/.test(q);
   if (isGreeting) { tags.push('greeting'); return { primary: 'greeting', tags }; }
@@ -537,6 +565,17 @@ export async function POST(req: Request) {
     const labelNotRecent = (label: string) => lastLabels.indexOf(label) === -1;
 
     if (!shouldSuppressTip(intents.primary, phase)) {
+      // If prior suggestion was followed, affirm once (cooldown-aware)
+      try {
+        const cs = countersState as SessionCounters;
+        if (cs.lastSuggestion && !cs.affirmedOnce && ctx.text.toLowerCase().includes(String(cs.lastSuggestion).toLowerCase())) {
+          if (!blockedByPolicy(sessionId, policy)) {
+            tip = { label: 'Affirm good move', message: 'Nice follow-up—now ask for an example', severity: 'info' };
+          }
+          cs.affirmedOnce = true;
+          counters.set(sessionId, cs);
+        }
+      } catch {}
       // Try LLM mentor tip first (repair-only, additive). Build a compact recent history.
       try {
         const recent: { speaker: 'interviewer'|'participant'; text: string }[] = [];
@@ -583,16 +622,23 @@ export async function POST(req: Request) {
       }
     }
 
-    // Legacy hint as fallback (backward-compatible)
+    // No legacy default fallback; remain silent if nothing helpful
     let hint: CoachHint | null = null;
-    if (!tip) {
-      hint = chooseHintFromContext(ctx) || semanticCoach(sessionId, sample) || await maybeLLM(sample) || heuristicCoach(sample, policy);
-    }
 
     // Enforce anti-spam label repeat and note hint
     if (tip) {
       if (labelNotRecent(tip.label)) {
         noteHint(sessionId, tip.label);
+        // Record suggestion for one-time affirmation if present
+        try {
+          const anyTip: any = tip;
+          if (anyTip && typeof anyTip.suggestion === 'string' && anyTip.suggestion.trim()) {
+            const c = (counters.get(sessionId) || { lastHintAt: 0, windowStart: Date.now(), countInWindow: 0, questionsSeen: 0, lastTipLabels: [] }) as SessionCounters;
+            c.lastSuggestion = String(anyTip.suggestion);
+            c.lastSuggestionAt = Date.now();
+            counters.set(sessionId, c);
+          }
+        } catch {}
       } else {
         tip = null; // suppress repeated label within recent window
       }
@@ -607,6 +653,47 @@ export async function POST(req: Request) {
     }
 
     if (hint || tip) {
+      // Standardize coach message prefixes and content for UI clarity
+      try {
+        if (tip) {
+          const lbl = String((tip as any).label || '').toLowerCase();
+          const origMsg = String((tip as any).message || '').trim();
+          const origSugg = String((tip as any).suggestion || '').trim();
+          const cap = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
+          // Priority mapping: Try > Probe > Reframe > Affirm
+          if (lbl.includes('closed') || lbl.includes('clarify')) {
+            const alt = origSugg || origMsg.replace(/^.*?:\s*/, '');
+            (tip as any).message = cap(`Try: ${alt}`, 120);
+            delete (tip as any).suggestion;
+          } else if (lbl.includes('follow-up') || lbl.includes('probe')) {
+            const content = origSugg || origMsg;
+            (tip as any).message = cap(`Probe: ${content}`, 140);
+            delete (tip as any).suggestion;
+          } else if (lbl.includes('sensitive')) {
+            (tip as any).message = `Reframe: Give a brief reason and an opt-out, e.g., ‘To tailor this, could you share…? Totally fine to skip.’`;
+            delete (tip as any).suggestion;
+          } else if (lbl.includes('affirm')) {
+            (tip as any).message = `Affirm: Nice follow-up—now ask for an example`;
+            delete (tip as any).suggestion;
+          } else {
+            // Fallback: if suggestion exists, treat as Try; else Probe
+            if (origSugg) {
+              (tip as any).message = cap(`Try: ${origSugg}`, 120);
+              delete (tip as any).suggestion;
+            } else if (origMsg) {
+              (tip as any).message = cap(`Probe: ${origMsg}`, 140);
+            }
+          }
+        } else if (hint) {
+          // Legacy hints: normalize to one of the prefixes
+          const k = (hint as any).kind as string;
+          const t = String((hint as any).text || '').trim();
+          if (k === 'probe') (hint as any).text = `Probe: ${t}`;
+          else if (k === 'clarify') (hint as any).text = `Try: ${t}`;
+          else if (k === 'boundary') (hint as any).text = `Reframe: Give a brief reason and an opt-out, e.g., ‘To tailor this, could you share…? Totally fine to skip.’`;
+          else if (k === 'praise' || k === 'rapport') (hint as any).text = `Affirm: ${t}`;
+        }
+      } catch {}
       if (process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line no-console
         console.log('[coach:tip]', { tip, hint: hint ? { kind: (hint as any).kind, text: (hint as any).text } : null, intents });

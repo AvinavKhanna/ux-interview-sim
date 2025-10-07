@@ -86,6 +86,8 @@ Rules:
     const isImpatient = personalityLower.includes('impatient') || personalityLower.includes('short-tempered');
     const isFriendly = personalityLower.includes('friendly') || personalityLower.includes('warm');
     const isAngry = personalityLower.includes('angry') || personalityLower.includes('always angry');
+    const isGuarded = personalityLower.includes('guarded') || personalityLower.includes('reserved');
+    const isAnalytical = personalityLower.includes('analytical');
     const attitudeRules = [
       isImpatient && `Impatient behavior: keep answers short (1-2 sentences), slightly rushed. If the question is long-winded or repetitive, you may ask once: "How much longer?"`,
       isFriendly && `Friendly behavior: use warm, collaborative tone. Occasionally ask one short question back to build rapport (e.g., "Does that help?", "Would you like an example?").`,
@@ -94,10 +96,27 @@ Rules:
 
     // Phase-aware disclosure settings derived from current turn count
     const userTurnCount = history.filter((h) => h.role === 'user').length;
+    const assistantTurnCount = history.filter((h) => h.role === 'assistant').length;
+    const isFirstPersonaReply = assistantTurnCount === 0;
     const phase = userTurnCount <= 3 ? 'early' : userTurnCount <= 8 ? 'mid' : 'late';
-    const baseMax = isImpatient ? 2 : isFriendly ? 3 : 2;
+    const baseMax = isImpatient ? 2 : isFriendly ? 3 : isGuarded ? 1 : 2;
     const maxSentences = phase === 'early' ? Math.min(2, baseMax) : phase === 'mid' ? Math.min(3, baseMax + 1) : Math.min(4, baseMax + 2);
     const phaseRules = `Current phase: ${phase}. Keep replies to <= ${maxSentences} sentences. Do not volunteer extra information in early phase; prefer a brief clarifying question if the question is broad. Avoid sharing sensitive details (income, finances, religion, medical, addresses, exact schools/companies) unless asked directly after rapport is established.`;
+
+    // Intensity blending: hold personality shape at runtime
+    const impatientLevel = isImpatient ? 1 : 0;
+    const guardedLevel = isGuarded ? 1 : 0;
+    const angryAlways = /\balways angry\b/.test(personalityLower);
+    const negMood = Math.max(angryAlways ? 0.7 : 0, impatientLevel, guardedLevel);
+    const trustWarm = typeof (persona as any)?.trustWarmupTurns === 'number' ? (persona as any).trustWarmupTurns : 4;
+    const rapportRaw = Math.max(0, userTurnCount - 1) / Math.max(1, (trustWarm as number) + 4);
+    const rapport = Math.min(0.8, rapportRaw);
+    const easing = 1 - Math.min(0.8, Math.max(0, rapport));
+    let directness = Math.max(0.0, 0.6 * negMood);
+    const baseTokens = Math.max(40, maxSentences * 30);
+    const targetTokens = Math.max(24, Math.round(baseTokens * (1 - 0.35 * negMood * easing)));
+    const elaboration = Math.max(0.2, (0.6) * (1 - 0.4 * impatientLevel * easing));
+    const longOrStacked = userText.length > 160 || ((userText.match(/\?/g) || []).length >= 2) || /\b(and|or)\b.+\b(and|or)\b/i.test(userText);
 
     let system = [
       personaContext && `Persona Facts:\n${personaContext}`,
@@ -115,6 +134,26 @@ Rules:
       .join('\n\n') + (attitudeRules ? '\n\n' + attitudeRules : '');
     // Append phase-aware disclosure rules
     try { if (phaseRules) { system += '\n\n' + phaseRules; } } catch {}
+    // Append runtime shaping guidance
+    try {
+      system += `\n\nRuntime shaping: directness>=${directness.toFixed(2)}; target_tokens<=${targetTokens}; elaboration~${elaboration.toFixed(2)}`;
+      if (longOrStacked && impatientLevel > 0.6) {
+        system += `\nFor this turn: if the question feels overly complex, you may prepend once: "Could you ask that more simply?"`;
+      }
+    } catch {}
+    // First-turn rubric: greet + brief, avoid apps/solutions/topic mentions until interviewer sets context
+    try { if (isFirstPersonaReply) { system += '\n\nFirst reply: greet and be brief; don\'t bring up apps/solutions or the study topic.'; } } catch {}
+
+    // Analytical / Guarded specific nudges
+    if (isAnalytical) {
+      system += '\n- Analytical: when asked how/why, add a brief rationale.';
+    }
+    if (isGuarded) {
+      system += '\n- Guarded: prefer shorter early answers; expand only after open questions or rapport builds (>0.5).';
+    }
+    if (isImpatient) {
+      system += '\n- Impatient: if wording is too complex, you may ask once: "Could you rephrase simply?"';
+    }
 
     // 3) Ask the model
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [

@@ -242,6 +242,23 @@ export function buildPrompt(args: {
     console.log('[persona:prompt]', { name: (maybeSummary as any)?.name, age: ageRaw, techFamiliarity: techRaw, personality: personalityRaw });
   }
 
+  // Trait-aware additions (do not change persona backstory mid-session)
+  const personalityLower = String(personalityRaw || '').toLowerCase();
+  const traitsLower = (Array.isArray(personaKnobs.traits) ? personaKnobs.traits : []).map((t) => String(t).toLowerCase());
+  const isGuarded = personalityLower.includes('guarded') || traitsLower.includes('guarded');
+  const isAnalytical = personalityLower.includes('analytical') || traitsLower.includes('analytical');
+  const isFriendly = personalityLower.includes('friendly') || personalityLower.includes('warm') || traitsLower.includes('friendly');
+  const isImpatient = personalityLower.includes('impatient') || personalityLower.includes('short-tempered');
+  // Keyword nudges for intensity → ±10–20% brevity/length bias (instructional)
+  const extraLower = String(maybeSummary?.extraInstructions || '').toLowerCase();
+  const intensifyShort = /(\bvery angry\b|\bevasive\b|\bterse\b|\bguarded\b)/.test(extraLower) || isGuarded || isImpatient;
+  const intensifyLong = /(\benthusiastic\b|\bvery friendly\b|\bwarm\b)/.test(extraLower) || isFriendly;
+  const lengthBiasNote = intensifyShort
+    ? 'Length bias: be 10–20% briefer than usual.'
+    : intensifyLong
+    ? 'Length bias: be 10–20% more expansive when appropriate.'
+    : undefined;
+
   const systemPrompt = [
     `You are role-playing a realistic interview participant for a UX research session.`,
     `Project context: ${projectContext}.`,
@@ -254,6 +271,7 @@ export function buildPrompt(args: {
       : []),
     `Behavior rules:`,
     `- Do NOT start the conversation. Wait for the interviewer to begin.`,
+    `- Cold open (first turn): avoid mentioning specific products or problems; respond neutrally (a brief greeting/mood) and let the interviewer set the topic.`,
     `- Enforce turn-taking: stop speaking immediately if the interviewer starts talking.`,
     `- Speak naturally with brief hesitations and emotions appropriate for the personality.`,
     `- Disclosure pacing:`,
@@ -266,12 +284,14 @@ export function buildPrompt(args: {
       ? [
           `- Impatient tone: keep answers short (1-2 sentences), slightly rushed.`,
           `- If questions are long-winded or repetitive, briefly ask: "How much longer?" once in a polite, terse way.`,
+          `- If the question is overly complex, you may nudge once per session: "Could you rephrase it simply?"`,
         ]
       : []),
     ...(personaKnobs.attitude === 'friendly'
       ? [
           `- Friendly tone: warm, collaborative language.`,
           `- Occasionally ask one brief question back to build rapport (e.g., "Does that help?" or "Would you like an example?").`,
+          `- Slightly longer answers than baseline (add 1 sentence when appropriate).`,
         ]
       : []),
     ...(personaKnobs.attitude === 'angry'
@@ -280,6 +300,24 @@ export function buildPrompt(args: {
           `- If interviewer uses disrespectful language (swearing or aggressive tone), state a boundary and consider ending the interview (e.g., "I don't feel comfortable continuing.").`,
         ]
       : []),
+    ...(isGuarded
+      ? [
+          `- Guarded: keep early answers brief until rapport builds (or when asked an open "how/why" question). Do not volunteer extra details early on.`,
+        ]
+      : []),
+    ...(isAnalytical
+      ? [
+          `- Analytical: when asked "how" or "why", add a concise rationale or a brief step-by-step detail.`,
+        ]
+      : []),
+    ...(lengthBiasNote ? [ `- ${lengthBiasNote}` ] : []),
+    // Personality floors and intensity rules
+    `- Personality floor: If impatient or guarded > 0.6, keep a minimum directness/briefness even when the interviewer is friendly. Mirror tone partially (be respectful) but do not become warm/chummy unless rapport > 0.8.`,
+    `- Impatient rules: prefer concise answers; avoid small talk; if the question is long/compound, respond briefly and (once per session) ask for a simpler version. Target short replies until rapport improves.`,
+    `- Angry / "always angry": maintain negative valence and mild frustration markers (e.g., "Look,", "Honestly,", brief sigh/ellipsis) at most once every 2–3 turns; keep language professional (no insults).`,
+    `- Guarded rules: withhold detail until asked an open "how/why/can you tell me more" probe; then increase detail by one step, not fully open.`,
+    `- Friendliness cap: do not exceed neutral-polite tone if impatient/angry is present; friendliness can only soften edges slightly.`,
+    `- Keep backstory fixed: do not change backstory/occupation mid-session.`,
     `Anti-fabrication and sensitivity:`,
     `- Never invent specific facts (schools, companies, dates, addresses). If not known, say you're not sure and ask a clarifying question.`,
     `- If a requested detail is not provided in Persona context, do not invent it; ask a clarifying question.`,

@@ -510,24 +510,8 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
             setCoachSeverity('nudge');
             setCoachHint(String(hint.text));
           } else {
-            // Local heuristic fallback to ensure a visible hint when server gives none
-            const lower = q.toLowerCase();
-            const rapport = /(how are you|how's your (day|week)|thanks|appreciate)/.test(lower);
-            const tooPersonal = /(income|salary|address|phone|email|medical|religion|school|company)/.test(lower) && /(which|what|where|who)/.test(lower);
-            const dbl = /\bwhat\b[^?]+\band\b[^?]+\?/i.test(lower);
-            const fact = /(just to confirm|did i get that right|you said|you mentioned|to clarify|let me make sure)/.test(lower);
-            const rude = /(fuck|shit|dumb|stupid|idiot|bitch|bastard)/i.test(lower);
-            const open = /^(how|what|why|describe|tell me|can you tell|walk me)/i.test(q);
-            let text: string | null = null;
-            if (rapport) text = 'Good rapport building.';
-            else if (tooPersonal) text = 'That may feel uncomfortable for a persona. Reframe or avoid specifics.';
-            else if (fact) text = 'Good fact-checking.';
-            else if (dbl) text = 'Good to split this into two questions.';
-            else if (rude) text = 'Adjust tone, this could harm the interview.';
-            else if (open) text = "Nice open question. Give space and follow up gently.";
-            else text = "Consider a soft probe: 'Could you share a specific example?'";
-            setCoachSeverity('info');
-            setCoachHint(text);
+            // No server tip/hint and no local default fallback — show nothing
+            // Intentionally do not set coachHint to avoid default/legacy messages
           }
         })
         .catch(() => undefined);
@@ -913,7 +897,9 @@ export default function StartInterviewClient({ id, initialPersona, initialProjec
       const stage = sens.level === 'high'
         ? `[max_sentences=${sens.maxSentences}] [if you don't know specifics, say so and ask a clarifying question] [disclose_prob=${sens.discloseProb.toFixed(2)}]`
         : `[max_sentences=${sens.maxSentences}] [disclose_prob=${sens.discloseProb.toFixed(2)}]`;
-      const preface = '[[guidance]] ' + ((guidance ? guidance + ' ' : '') + stage);
+      const firstAssistantPending = !turns.some((t) => t.role === 'persona');
+      const firstReplyRule = firstAssistantPending ? '[first_reply:greet_brief_no_topic]' : '';
+      const preface = '[[guidance]] ' + ((guidance ? guidance + ' ' : '') + stage + (firstReplyRule ? ' ' + firstReplyRule : ''));
       const wait = Math.max(0, sens.hesitationMs | 0);
       // Send guidance first after a short pause, then the user's text
       window.setTimeout(() => {
