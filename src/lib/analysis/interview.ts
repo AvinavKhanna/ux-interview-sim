@@ -1,4 +1,4 @@
-import type { Turn } from "@/types/report";
+﻿import type { Turn } from "@/types/report";
 
 // Normalize quotes/dashes to avoid mojibake in UI
 function normalizeText(s: string): string {
@@ -6,7 +6,7 @@ function normalizeText(s: string): string {
     let t = String(s || '');
     t = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/[\u2013\u2014]/g, '-');
     // Common mojibake from UTF-8 read as Latin-1
-    t = t.replace(/â€œ|â€�/g, '"').replace(/â€™/g, "'").replace(/â€“|â€”/g, '-');
+    t = t.replace(/Ã¢â‚¬Å“|Ã¢â‚¬ï¿½/g, '"').replace(/Ã¢â‚¬â„¢/g, "'").replace(/Ã¢â‚¬â€œ|Ã¢â‚¬â€/g, '-');
     return t;
   } catch { return String(s || ''); }
 }
@@ -118,14 +118,14 @@ export function buildInsightsQuotes(turns: Turn[]): { strengths: QuoteStrength[]
   // Strength 1: open question by user
   for (const t of turns) {
     if (t.speaker === 'user' && isOpen(t.text)) {
-      strengths.push({ quote: t.text, note: 'Open question — invites elaboration.' });
+      strengths.push({ quote: t.text, note: 'Open question â€” invites elaboration.' });
       break;
     }
   }
   // Strength 2: enthusiastic participant reply
   for (const t of turns) {
     if (t.speaker === 'assistant' && /(definitely|love|great|usually|often|for example|i like|i enjoy|happy to)/i.test(String(t.text||''))) {
-      strengths.push({ quote: t.text, note: 'Participant engaged — good rapport signal.' });
+      strengths.push({ quote: t.text, note: 'Participant engaged â€” good rapport signal.' });
       break;
     }
   }
@@ -139,13 +139,23 @@ export function buildInsightsQuotes(turns: Turn[]): { strengths: QuoteStrength[]
     const within15s = Math.abs((u2.at || 0) - (u1.at || 0)) <= 15_000;
     const follow = isOpen(u2.text) || /\b(why|how|example|more|tell me more|could you)\b/i.test(u2.text);
     if (aWords < 12 && within15s && !follow) {
-      improvements.push({ quote: a.text, note: 'Short answer — consider probing once more.' });
+      improvements.push({ quote: a.text, note: 'Short answer â€” consider probing once more.' });
     }
   }
   // Improvements from closed questions with a suggestion
   const rewrites = suggestRewritesV2(turns, 3);
   for (const r of rewrites) {
-    improvements.push({ quote: r.original, note: 'Closed phrasing — try opening it up.', suggestion: r.rewrite });
+    improvements.push({ quote: r.original, note: 'Closed phrasing â€” try opening it up.', suggestion: r.rewrite });
+  }
+  // Normalize quotes/dashes to avoid mojibake in UI
+  for (const s of strengths) {
+    s.quote = normalizeText(s.quote);
+    s.note = normalizeText(s.note);
+  }
+  for (const im of improvements) {
+    im.quote = normalizeText(im.quote);
+    im.note = normalizeText(im.note);
+    if ((im as any).suggestion) (im as any).suggestion = normalizeText(String((im as any).suggestion));
   }
   return { strengths: strengths.slice(0,3), improvements: improvements.slice(0,3) };
 }
@@ -175,7 +185,7 @@ export function missedOpportunities(turns: Turn[], max = 5) {
     if (within15s && !isFollowUp) {
       const hh = new Date(a.at).getHours().toString().padStart(2, '0');
       const mm = new Date(a.at).getMinutes().toString().padStart(2, '0');
-      misses.push(`[${hh}:${mm}] Missed probe after short answer ("${a.text.slice(0, 60)}"…)`);
+      misses.push(`[${hh}:${mm}] Missed probe after short answer ("${a.text.slice(0, 60)}"â€¦)`);
       if (misses.length >= max) break;
     }
   }
@@ -338,7 +348,7 @@ export function interviewScoreV2(turns: Turn[]) {
   const factScoreOld = q.factcheck >= 1 ? 5 : 0; // 0..5
   const tonePenaltyOld = Math.min(60, (profanityEvent ? 30 : 0) + (hostilityEvent ? 30 : 0));
   const interruptPenaltyOld = (function(){
-    // Use a simple threshold: at least two quick cut-ins → 10pt penalty
+    // Use a simple threshold: at least two quick cut-ins â†’ 10pt penalty
     let cnt = 0; for (let i=1;i<turns.length;i++){ const t=turns[i]; if (t.speaker!=='user') continue; let j=i-1; while(j>=0&&turns[j].speaker==='user') j--; if(j>=0&&turns[j].speaker==='assistant'){ const d=Math.abs((t.at||0)-(turns[j].at||0)); if(d<2000) cnt++; } }
     return cnt >= 2 ? 10 : 0;
   })();
@@ -380,13 +390,13 @@ export function buildInsightsV2(turns: Turn[]) {
   const durMs = stamps.length ? Math.max(0, Math.max(...stamps) - Math.min(...stamps)) : 0;
   const userQCount = turns.filter(t => t.speaker==='user' && /\?$/.test((t.text||'').trim())).length;
   if (durMs < 2*60_000 || userQCount < 3) {
-    recsBase.push('Interview felt brief—plan additional depth and follow-ups.');
+    recsBase.push('Interview felt briefâ€”plan additional depth and follow-ups.');
   }
   const rewrites = suggestRewritesV2(turns, 2);
-  const recs = recsBase.concat(rewrites.map(r => `Rewrite: \"${r.original}\" → \"${r.rewrite}\"`));
+  const recs = recsBase.concat(rewrites.map(r => `Rewrite: \"${r.original}\" â†’ \"${r.rewrite}\"`));
   const summaryLine = [
     ...summary(turns)
-  ].join(' · ');
+  ].join(' Â· ');
   const payload = { strengths: st, missed: mo, recommendations: recs, summaryLine, rewrites };
   if (process.env.NODE_ENV !== 'production') {
     if (!payload.strengths.length && !payload.missed.length && !payload.recommendations.length) {
@@ -406,10 +416,10 @@ export function buildInsightsV3(turns: Turn[]) {
   const stamps = turns.map(t=> Number(t.at)).filter(n=> Number.isFinite(n));
   const durMs = stamps.length ? Math.max(0, Math.max(...stamps) - Math.min(...stamps)) : 0;
   const userQCount = turns.filter(t => t.speaker==='user' && /\?$/.test((t.text||'').trim())).length;
-  if (durMs < 2*60_000 || userQCount < 3) recsBase.push('Interview felt brief — plan additional depth and follow-ups.');
+  if (durMs < 2*60_000 || userQCount < 3) recsBase.push('Interview felt brief â€” plan additional depth and follow-ups.');
   const rewrites = suggestRewritesV2(turns, 2);
-  const recs = recsBase.concat(rewrites.map(r => `Rewrite: "${r.original}" → "${r.rewrite}"`));
-  const summaryLine = [ ...summary(turns) ].join(' · ');
+  const recs = recsBase.concat(rewrites.map(r => `Rewrite: "${r.original}" â†’ "${r.rewrite}"`));
+  const summaryLine = [ ...summary(turns) ].join(' Â· ');
   // Narrative paragraph
   const qTypes = questionTypesWithFollowUp(turns);
   const tt = talkTimeRatio(turns);
@@ -420,18 +430,18 @@ export function buildInsightsV3(turns: Turn[]) {
   const summaryParagraph = narrativeParts.join(' ');
   const strengthsBulletPoints = st.slice(0, 3);
   const improvementBulletPoints: string[] = [];
-  // Build concrete items: short quote + Try rewrite (≤ 120 chars)
+  // Build concrete items: short quote + Try rewrite (â‰¤ 120 chars)
   const bulletsFromRewrites = rewrites.slice(0,3).map(r => {
-    const quote = `“${r.original}”`;
+    const quote = `â€œ${r.original}â€`;
     const tip = `Try: ${r.rewrite}`;
-    const text = `${quote} — ${tip}`;
-    return text.length > 120 ? text.slice(0,117) + '…' : text;
+    const text = `${quote} â€” ${tip}`;
+    return text.length > 120 ? text.slice(0,117) + 'â€¦' : text;
   });
   improvementBulletPoints.push(...bulletsFromRewrites);
   if (!improvementBulletPoints.length) {
-    if (qTypes.closed > qTypes.open) improvementBulletPoints.push('“(closed question)” — Try: How would you describe that experience?');
-    if (mo.length) improvementBulletPoints.push('“(brief answer)” — Try: Could you share a specific example of that?');
-    if (durMs < 2*60_000) improvementBulletPoints.push('“(short session)” — Try: What made that difficult for you recently?');
+    if (qTypes.closed > qTypes.open) improvementBulletPoints.push('â€œ(closed question)â€ â€” Try: How would you describe that experience?');
+    if (mo.length) improvementBulletPoints.push('â€œ(brief answer)â€ â€” Try: Could you share a specific example of that?');
+    if (durMs < 2*60_000) improvementBulletPoints.push('â€œ(short session)â€ â€” Try: What made that difficult for you recently?');
   }
   const nextPracticePrompts = [
     'Can you share a specific example of that?',
@@ -493,10 +503,10 @@ export function buildInsights(turns: Turn[]) {
   const recsBase: string[] = [];
   if (mo.length) recsBase.push('Add one probe after brief answers.');
   const rewrites = suggestRewrites(turns, 2);
-  const recs = recsBase.concat(rewrites.map(r => `Rewrite: "${r.original}" → "${r.rewrite}"`));
+  const recs = recsBase.concat(rewrites.map(r => `Rewrite: "${r.original}" â†’ "${r.rewrite}"`));
   const summaryLine = [
     ...summary(turns)
-  ].join(' • ');
+  ].join(' â€¢ ');
   return { strengths: st, missed: mo, recommendations: recs, summaryLine, rewrites };
 }
 
@@ -602,3 +612,4 @@ export function buildAnalytics(turns: Turn[]): AnalyticsReport {
     followUpChainDepth: chainDepth,
   };
 }
+
