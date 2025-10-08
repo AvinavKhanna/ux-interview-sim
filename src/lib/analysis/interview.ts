@@ -271,58 +271,70 @@ export function interviewScoreV2(turns: Turn[]) {
   const tt = talkTimeRatio(turns);
   const q = questionTypeRatio(turns);
   const totalQs = q.open + q.closed + q.rapport + q.factcheck;
+  // Question variety with penalty for back-to-back closed
   const openRatio = totalQs ? q.open / Math.max(1, totalQs) : 0;
-  const openScore = Math.min(1, openRatio / 0.5) * 20; // 0..20, target >=50%
-  const balanceWithin = tt.userPct >= 35 && tt.userPct <= 65 ? 1 : Math.max(0, 1 - (Math.abs((tt.userPct < 35 ? 35 : 65) - tt.userPct) / 35));
-  const balanceScore = balanceWithin * 15; // 0..15
-  const misses = missedOpportunitiesV2(turns, 1000).length;
-  const followScore = Math.max(0, 20 - misses * 5); // 0..20
-  const rapportScore = q.rapport >= 1 ? 10 : 0; // 0..10
-  const factScore = q.factcheck >= 1 ? 5 : 0; // 0..5
+  let backToBackClosed = 0;
+  for (let i=1;i<turns.length;i++) {
+    if (turns[i].speaker==='user' && isClosed(turns[i].text) && turns[i-1].speaker==='user' && isClosed(turns[i-1].text)) backToBackClosed += 1;
+  }
+  const varietyBase = openRatio;
+  const varietyPenalty = Math.min(0.3, backToBackClosed * 0.05);
+  const varietyScore = Math.max(0, varietyBase - varietyPenalty); // 0..1
 
-  // Tone/respect penalties
+  // Follow-up depth normalized to 3
+  const depth = followUpChainDepth(turns);
+  const depthScore = Math.min(1, depth / 3);
+
+  // Talk balance: peak near 50%
+  const dist = Math.min(50, Math.abs(50 - tt.userPct));
+  const balanceScore = 1 - dist / 50; // 1 at 50%, 0 at 0/100
+
+  // Civility
   const profanityEvent = turns.some(t => t.speaker === 'user' && /(\bfuck\b|\bshit\b|\basshole\b|\bbitch\b|\bidiot\b|\bstupid\b|\bdumb\b)/i.test(t.text));
   const hostilityEvent = turns.some(t => t.speaker === 'user' && /(\bI (hate|despise) you\b|\byou suck\b|\bshut up\b|\byou (are|re) (wrong|dumb|stupid))/i.test(t.text));
-  const tonePenalty = Math.min(60, (profanityEvent ? 30 : 0) + (hostilityEvent ? 30 : 0));
-  // Repeated interruptions: user turn within <2s of last assistant ts, at least twice
+  const civilityScore = (profanityEvent || hostilityEvent) ? 0.2 : 1.0;
+
+  // Interruptions per min
   let interruptCount = 0;
   for (let i = 1; i < turns.length; i++) {
     const t = turns[i];
     if (t.speaker !== 'user') continue;
-    let j = i - 1;
-    while (j >= 0 && turns[j].speaker === 'user') j--;
+    let j = i - 1; while (j >= 0 && turns[j].speaker === 'user') j--; 
     if (j >= 0 && turns[j].speaker === 'assistant') {
       const delta = Math.abs((t.at || 0) - (turns[j].at || 0));
       if (delta < 2000) interruptCount += 1;
     }
   }
-  const interruptPenalty = interruptCount >= 2 ? 10 : 0;
-
-  // Duration / session depth penalties (short interviews or very few questions)
   const stamps = turns.map(t=> Number(t.at)).filter(n=> Number.isFinite(n));
   const durMs = stamps.length ? Math.max(0, Math.max(...stamps) - Math.min(...stamps)) : 0;
-  const userQCount = turns.filter(t => t.speaker==='user' && /\?$/.test((t.text||'').trim())).length;
-  let depthPenalty = 0;
-  if (durMs < 2 * 60_000) depthPenalty += 10; // <2m
-  if (userQCount < 3) depthPenalty += 10;      // <3 questions
+  const mins = durMs > 0 ? (durMs / 60000) : 0;
+  const ipm = mins ? (interruptCount / mins) : 0;
+  const interruptScore = ipm <= 0.2 ? 1 : ipm >= 1 ? 0 : (1 - (ipm - 0.2) / 0.8);
 
-  const positives = openScore + balanceScore + followScore + rapportScore + factScore; // up to 70
-  const toneBase = 30; // respectful tone credit
-  const rawTotal = positives + (toneBase - tonePenalty) - interruptPenalty - depthPenalty;
-  const total = Math.max(0, Math.min(100, Math.round(rawTotal)));
+  // Weights
+  const w = { balance: 0.22, variety: 0.22, depth: 0.22, civility: 0.18, interruptions: 0.16 };
+  let total = (balanceScore * w.balance + varietyScore * w.variety + depthScore * w.depth + civilityScore * w.civility + interruptScore * w.interruptions) * 100;
+  if (durMs < 2*60_000) total -= 5; // short session penalty
+  total = Math.max(0, Math.min(100, Math.round(total)));
+
   const breakdown = [
-    { key: 'openQuestions', label: 'Open Questions', value: Math.round(openScore), reason: `${q.open} open out of ${Math.max(1,totalQs)} (~${Math.round(openRatio*100)}%)` },
-    { key: 'talkBalance', label: 'Talk Balance', value: Math.round(balanceScore), reason: `You ${tt.userPct}% vs Participant ${tt.assistantPct}% (by words)` },
-    { key: 'followUps', label: 'Follow-ups', value: Math.round(followScore), reason: `${misses} missed probes` },
-    { key: 'rapport', label: 'Rapport', value: rapportScore, reason: q.rapport ? `${q.rapport} rapport turns` : 'none detected' },
-    { key: 'factCheck', label: 'Fact-check', value: factScore, reason: q.factcheck ? `${q.factcheck} clarifying turns` : 'none detected' },
-    { key: 'toneCredit', label: 'Tone credit', value: toneBase, reason: 'Respectful tone baseline' },
-    { key: 'tonePenalty', label: 'Tone penalty', value: -tonePenalty, reason: profanityEvent || hostilityEvent ? 'disrespect detected' : 'no penalty' },
-    { key: 'interruptions', label: 'Interruptions', value: -interruptPenalty, reason: interruptPenalty ? `${interruptCount} quick cut-ins` : 'no penalty' },
-    { key: 'depthPenalty', label: 'Depth penalty', value: -depthPenalty, reason: `${durMs < 120000 ? '<2m' : 'duration ok'}, ${userQCount < 3 ? '<3 questions' : 'questions ok'}` },
+    { key: 'talkBalance', label: 'Talk Balance', value: Math.round(balanceScore * 100 * w.balance), reason: `You ${tt.userPct}% vs Participant ${tt.assistantPct}%` },
+    { key: 'questionVariety', label: 'Question Variety', value: Math.round(varietyScore * 100 * w.variety), reason: `${q.open} open, ${q.closed} closed; ${backToBackClosed} back-to-back closed` },
+    { key: 'followUpDepth', label: 'Follow-up Depth', value: Math.round(depthScore * 100 * w.depth), reason: `Longest chain ${depth}` },
+    { key: 'toneCivility', label: 'Tone/Civility', value: Math.round(civilityScore * 100 * w.civility), reason: (profanityEvent || hostilityEvent) ? 'disrespect detected' : 'respectful' },
+    { key: 'interruptions', label: 'Interruptions', value: Math.round(interruptScore * 100 * w.interruptions), reason: `${interruptCount} quick cut-ins (~${mins? ipm.toFixed(2):'0'}/min)` },
   ];
-  const tooltip = 'Weights: Open (20), Balance (15), Follow-ups (20), Tone (base 30 - penalties), Rapport (10), Fact-check (5).';
-  return { total, rawTotal: Math.round(rawTotal), components: { openScore: Math.round(openScore), balanceScore: Math.round(balanceScore), followScore: Math.round(followScore), rapportScore, factScore, tonePenalty, interruptPenalty }, breakdown, tooltip } as any;
+  const subs = [
+    { k: 'balance', v: balanceScore },
+    { k: 'variety', v: varietyScore },
+    { k: 'depth', v: depthScore },
+    { k: 'civility', v: civilityScore },
+    { k: 'interruptions', v: interruptScore },
+  ].sort((a,b)=>a.v-b.v).slice(0,2).map(x=>x.k);
+  const reasonMap: Record<string,string> = { balance: 'imbalanced talk ratio', variety: 'few open follow-ups', depth: 'low depth', civility: 'tone/civility concerns', interruptions: 'frequent cut-ins' };
+  const scoreReason = subs.map(k=>reasonMap[k]||k).join(' and ');
+  const tooltip = 'Weights: Balance 0.22, Variety 0.22, Depth 0.22, Civility 0.18, Interruptions 0.16.';
+  return { total, components: { balanceScore, varietyScore, depthScore, civilityScore, interruptScore }, breakdown, tooltip, scoreReason } as any;
 }
 
 export function buildInsightsV2(turns: Turn[]) {
@@ -375,9 +387,19 @@ export function buildInsightsV3(turns: Turn[]) {
   const summaryParagraph = narrativeParts.join(' ');
   const strengthsBulletPoints = st.slice(0, 3);
   const improvementBulletPoints: string[] = [];
-  if (qTypes.closed > qTypes.open) improvementBulletPoints.push('Reframe more closed questions to open prompts.');
-  if (mo.length) improvementBulletPoints.push('Add one probe after brief answers.');
-  if (durMs < 2*60_000) improvementBulletPoints.push('Aim for at least 2 minutes to build depth.');
+  // Build concrete items: short quote + Try rewrite (≤ 120 chars)
+  const bulletsFromRewrites = rewrites.slice(0,3).map(r => {
+    const quote = `“${r.original}”`;
+    const tip = `Try: ${r.rewrite}`;
+    const text = `${quote} — ${tip}`;
+    return text.length > 120 ? text.slice(0,117) + '…' : text;
+  });
+  improvementBulletPoints.push(...bulletsFromRewrites);
+  if (!improvementBulletPoints.length) {
+    if (qTypes.closed > qTypes.open) improvementBulletPoints.push('“(closed question)” — Try: How would you describe that experience?');
+    if (mo.length) improvementBulletPoints.push('“(brief answer)” — Try: Could you share a specific example of that?');
+    if (durMs < 2*60_000) improvementBulletPoints.push('“(short session)” — Try: What made that difficult for you recently?');
+  }
   const nextPracticePrompts = [
     'Can you share a specific example of that?',
     'What made that challenging for you recently?',

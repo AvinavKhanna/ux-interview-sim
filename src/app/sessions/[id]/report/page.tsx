@@ -208,6 +208,9 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           <div>Started: {started ? started.toLocaleString() : 'unknown'}</div>
           <div>Stopped: {stopped ? stopped.toLocaleString() : 'unknown'}</div>
           <div>Duration: {durationLabel}</div>
+          {Boolean((report as any).overallSummary) ? (
+            <p className="text-sm text-gray-700 mt-1">{String((report as any).overallSummary)}</p>
+          ) : null}
           {meta.personaSummary ? (
             <div className="mt-2 text-gray-600">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} · {String((meta.personaSummary as any)?.techFamiliarity ?? '')} · {String((meta.personaSummary as any)?.personality ?? '')}</div>
           ) : null}
