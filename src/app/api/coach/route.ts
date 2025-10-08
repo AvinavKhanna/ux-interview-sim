@@ -653,7 +653,7 @@ export async function POST(req: Request) {
     }
 
     if (hint || tip) {
-      // Standardize coach message prefixes and content for UI clarity
+      // Standardize coach message prefixes and content for UI clarity; enforce addressing the interviewer
       try {
         if (tip) {
           const lbl = String((tip as any).label || '').toLowerCase();
@@ -684,6 +684,15 @@ export async function POST(req: Request) {
               (tip as any).message = cap(`Probe: ${origMsg}`, 140);
             }
           }
+          // Audience guard: rewrite any persona-directed phrasing to interviewer-centric
+          let msg = String((tip as any).message || '');
+          const personaAimed = /\b(focus on sharing your experiences|tell me about your|you are|your experiences)\b/i.test(msg);
+          if (personaAimed) {
+            msg = msg.replace(/\byou are\b/gi, 'they are').replace(/\byour\b/gi, 'their');
+            if (!/^Try:|^Probe:|^Reframe:|^Affirm:/i.test(msg)) msg = `Probe: ${msg}`;
+          }
+          // Enforce addressing the interviewer (second person) and keep within 120 chars
+          (tip as any).message = cap(msg, 120);
         } else if (hint) {
           // Legacy hints: normalize to one of the prefixes
           const k = (hint as any).kind as string;
@@ -692,13 +701,35 @@ export async function POST(req: Request) {
           else if (k === 'clarify') (hint as any).text = `Try: ${t}`;
           else if (k === 'boundary') (hint as any).text = `Reframe: Give a brief reason and an opt-out, e.g., ‘To tailor this, could you share…? Totally fine to skip.’`;
           else if (k === 'praise' || k === 'rapport') (hint as any).text = `Affirm: ${t}`;
+          // Audience guard for legacy hints
+          (hint as any).text = (hint as any).text.replace(/\byou are\b/gi, 'they are').replace(/\byour\b/gi, 'their');
+          (hint as any).text = ((hint as any).text.length > 120 ? (hint as any).text.slice(0, 120) : (hint as any).text);
+        }
+      } catch {}
+      // Same-topic assurance: Try/Probe must include keyword(s) from current question
+      try {
+        const kw = extractTopics(q, 3);
+        const hasKW = (s: string) => kw.some((w) => new RegExp(`\\b${w}\\b`, 'i').test(s));
+        if (tip) {
+          const s = String((tip as any).message || '');
+          if (/^\s*(Try:|Probe:)\s*/i.test(s) && !hasKW(s)) {
+            tip = null;
+          }
+        } else if (hint) {
+          const s = String((hint as any).text || '');
+          if (/^\s*(Try:|Probe:)\s*/i.test(s) && !hasKW(s)) {
+            hint = null;
+          }
         }
       } catch {}
       if (process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line no-console
         console.log('[coach:tip]', { tip, hint: hint ? { kind: (hint as any).kind, text: (hint as any).text } : null, intents });
       }
-      return NextResponse.json({ hints: hint ? [hint] : [], tip, intents: intents.tags } satisfies CoachResponse);
+      if (tip || hint) {
+        return NextResponse.json({ hints: hint ? [hint] : [], tip, intents: intents.tags } satisfies CoachResponse);
+      }
+      return NextResponse.json({ hints: [], tip: null, intents: intents.tags } satisfies CoachResponse);
     }
     return NextResponse.json({ hints: [], tip: null, intents: intents.tags } satisfies CoachResponse);
   } catch (err) {

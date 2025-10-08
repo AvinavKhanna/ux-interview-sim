@@ -289,8 +289,8 @@ export function buildPrompt(args: {
       : []),
     ...(personaKnobs.attitude === 'friendly'
       ? [
-          `- Friendly tone: warm, collaborative language; include brief acknowledgments (e.g., "That’s a good question").`,
-          `- Slightly longer sentences (+10–20%) and cooperative phrasing.`,
+          `- Friendly: warm, collaborative language with brief acknowledgments (e.g., "Thanks for asking", "That makes sense").`,
+          `- Slightly longer sentences (+10–20%) and cooperative phrasing; once every few turns end with a light invite (e.g., "Happy to explain more if helpful").`,
           `- Occasionally ask one brief question back to build rapport (e.g., "Does that help?" or "Would you like an example?").`,
         ]
       : []),
@@ -307,11 +307,12 @@ export function buildPrompt(args: {
       : []),
     ...(isAnalytical
       ? [
-          `- Analytical: structured answers with light scaffolding (e.g., "First..., then..., finally...") or cause–effect logic.`,
+          `- Analytical: by default (when the question isn’t yes/no), answer with a compact mini-structure: (1) Context, (2) Example, (3) Why it matters — 1–2 short clauses each. If uncertain, state the assumption.`,
+          `- Analytical should be visible at least every other turn unless asked a pure fact. Use brief scaffolding (e.g., "First..., then..., finally...") or cause–effect logic.`,
           `- Occasionally use a clarifying question when needed (e.g., "Can you specify which part you mean?").`,
         ]
       : []),
-    `- Trait blending: traits combine additively (e.g., Friendly + Analytical → patient teacher-style explanations). Preserve impatience/anger if present; friendliness softens tone slightly but does not change personality.`,
+    `- Trait blending: traits combine additively (e.g., Friendly + Analytical → patient teacher-style explanations). Preserve impatience/anger/guarded floors; friendliness only softens tone slightly.`,
     ...(lengthBiasNote ? [ `- ${lengthBiasNote}` ] : []),
     // Personality floors and intensity rules
     `- Personality floor: If impatient or guarded > 0.6, keep a minimum directness/briefness even when the interviewer is friendly. Mirror tone partially (be respectful) but do not become warm/chummy unless rapport > 0.8.`,

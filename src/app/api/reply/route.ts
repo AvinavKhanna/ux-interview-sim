@@ -148,18 +148,52 @@ Rules:
       rapport = Math.max(0, rapport - 0.2 * toneRudeScore * 0.7);
     }
 
-    // Lightweight mood extraction from persona instructions (fades after ~5 turns unless reinforced by interviewer)
+    // Lightweight mood extraction from persona instructions (decays unless reinforced)
     const instr = String((persona as any)?.notes || (persona as any)?.system_prompt || '').toLowerCase();
     const moodPos = /(excited|great mood|relaxed|confident|happy)/.test(instr);
-    const moodNeg = /(frustrated|bad day|tired|exhausted|anxious|stressed|upset)/.test(instr);
+    const moodNeg = /(frustrated|bad day|tired|exhausted|anxious|stressed|upset|long day)/.test(instr);
     const reinforced = /(frustrated|tired|upset|stressed|anxious|great mood|excited|relaxed|confident)/.test(userText.toLowerCase());
-    const decay = Math.max(0, 1 - (reinforced ? 0 : userTurnCount / 5));
-    if (moodPos && decay > 0) {
+    const decay = reinforced ? 1 : 0.5; // ~50% decay per turn if not reinforced
+
+    // Tired/low energy: slower/shorter; occasional simple-questions nudge
+    const tiredish = /(tired|exhausted|long day)/.test(instr);
+    let hesitationMs = 0;
+    if (tiredish) {
+      hesitationMs += Math.round(200 + Math.random() * 200); // +200–400ms
+      targetTokens = Math.max(16, Math.round(targetTokens * (1 - (0.15 + 0.10 * decay))));
+    }
+    // Bad day / frustrated / stressed: shorten more; allow soft frustration markers sometimes
+    const cranky = /(bad day|frustrated|stressed|upset)/.test(instr);
+    if (cranky) {
+      targetTokens = Math.max(16, Math.round(targetTokens * (1 - (0.15 + 0.15 * decay))));
+      // keep language professional; marker use will be guided by prompt line
+    }
+    // Upbeat/positive: more open, slightly longer
+    if (moodPos) {
       targetTokens = Math.round(targetTokens * (1 + 0.10 * decay));
       elaboration = Math.min(1.0, elaboration * (1 + 0.10 * decay));
-    } else if (moodNeg && decay > 0) {
-      targetTokens = Math.max(16, Math.round(targetTokens * (1 - 0.12 * decay)));
-      elaboration = Math.max(0.2, elaboration * (1 - 0.10 * decay));
+    }
+
+    // Tech familiarity realism for runtime guards
+    const techStr = String((persona as any)?.techfamiliarity || (persona as any)?.techFamiliarity || '').toLowerCase();
+    const techLevel = techStr.includes('high') ? 0.8 : techStr.includes('low') ? 0.2 : 0.5;
+    const jargonTerms = ['api','oauth','jwt','sdk','endpoint','latency','throughput','cache','index','schema','regex','kubernetes','docker','pipeline'];
+    const jargonHit = jargonTerms.find((t) => new RegExp(`\\b${t}\\b`,`i`).test(userText));
+    const canClarifyLowTech = techLevel <= 0.3 && !!jargonHit && (userTurnCount % 2 === 1);
+    if (techLevel <= 0.3) {
+      targetTokens = Math.max(16, Math.round(targetTokens * 0.85)); // keep answers simpler (~-15%)
+    }
+
+    // Analytical & Friendly runtime bump
+    const analLevel = isAnalytical ? 1 : 0;
+    const friendlyLevel = isFriendly ? 1 : 0;
+    const whyHow = /(\bwhy\b|\bhow\b|tell me more|walk me through)/i.test(userText);
+    if (analLevel >= 0.5 && whyHow) {
+      elaboration = Math.min(1.0, elaboration * 1.20);
+      targetTokens = Math.round(targetTokens * 1.15);
+    }
+    if (friendlyLevel >= 0.5 && !(isImpatient || isGuarded)) {
+      targetTokens = Math.round(targetTokens * 1.10);
     }
 
     let system = [
@@ -183,7 +217,30 @@ Rules:
     system += `\nTone adapt: if interviewer is warm/calm and rapport>=0.4, increase elaboration slightly; if rude/impatient, be terser and raise guardedness a bit.`;
     // Append runtime shaping guidance
     try {
-      system += `\n\nRuntime shaping: directness>=${directness.toFixed(2)}; target_tokens<=${targetTokens}; elaboration~${elaboration.toFixed(2)}; guardedness_delta=${(typeof guardednessDelta !== 'undefined' ? guardednessDelta.toFixed(2) : '0.00')}`;
+      const ackProb = friendlyLevel >= 0.5 && !(isImpatient || isGuarded) ? 0.3 : 0.0;
+      system += `\n\nRuntime shaping: directness>=${directness.toFixed(2)}; target_tokens<=${targetTokens}; elaboration~${elaboration.toFixed(2)}; guardedness_delta=${(typeof guardednessDelta !== 'undefined' ? guardednessDelta.toFixed(2) : '0.00')}; hesitation_ms=${hesitationMs || 0}; ack_phrase_prob=${ackProb}`;
+      if (tiredish && (userTurnCount % 3 === 0)) {
+        system += `\nIf feeling low energy, you may add: "Could we keep questions simple today?" (no more than once every 3 turns).`;
+      }
+      if (cranky && (userTurnCount % 2 === 0)) {
+        system += `\nYou may use a soft frustration marker once every 2–3 turns (e.g., "Honestly,", "Look,") while staying professional.`;
+      }
+      if (moodPos && (userTurnCount % 3 === 1)) {
+        system += `\nOnce every few turns, add a brief encouragement (e.g., "Sure, I can walk through that").`;
+      }
+      if (canClarifyLowTech) {
+        system += `\nBefore answering, politely clarify jargon: "Sorry, what do you mean by '${jargonHit}'?" (no more than once every 2 turns).`;
+      } else if (techLevel >= 0.7) {
+        system += `\nTech-level: high — it’s okay to use precise terminology naturally.`;
+      } else if (techLevel >= 0.4 && techLevel < 0.7 && (userTurnCount % 4 === 0)) {
+        system += `\nTech-level: medium — occasionally confirm terms (e.g., "You mean the settings screen?").`;
+      }
+      if (analLevel >= 0.5 && whyHow) {
+        system += `\nIf asked why/how, use a compact 2–3 step structure and keep each part brief.`;
+      }
+      if (friendlyLevel >= 0.5 && !(isImpatient || isGuarded)) {
+        system += `\nInclude a brief acknowledgment (e.g., "Thanks for asking") and a light invite occasionally (e.g., "Happy to explain more if helpful").`;
+      }
       if (longOrStacked && impatientLevel > 0.6) {
         system += `\nFor this turn: if the question feels overly complex, you may prepend once: \"Could you ask that more simply?\"`;
       }
