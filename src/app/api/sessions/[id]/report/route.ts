@@ -74,36 +74,36 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   try {
     const analytics = buildAnalytics(report.turns);
     // Build concise overall summary from analytics and transcript metrics
-    try {
-      const durMs = Number((report.meta as any)?.durationMs) || (analytics.duration?.durationMs ?? 0);
-      const userPct = (analytics.talkTimeMs?.userPct ?? analytics.talkTime?.userPct ?? 0) / 100;
-      const asstPct = (analytics.talkTimeMs?.assistantPct ?? analytics.talkTime?.assistantPct ?? 0) / 100;
-      // Recompute quick cut-in interruptions per minute (user before assistant <2s)
-      const stamps = report.turns.map(t=> Number(t.at)).filter(n=> Number.isFinite(n));
-      const durationMs = durMs || (stamps.length ? Math.max(...stamps) - Math.min(...stamps) : 0);
-      let interruptCount = 0;
-      for (let i=1;i<report.turns.length;i++){
-        const t = report.turns[i];
-        if (t.speaker !== 'user') continue;
-        let j=i-1; while (j>=0 && report.turns[j].speaker==='user') j--; 
-        if (j>=0 && report.turns[j].speaker==='assistant'){
-          const delta = Math.abs((Number(t.at)||0) - (Number(report.turns[j].at)||0));
-          if (delta < 2000) interruptCount += 1;
-        }
+    const durMs = Number((report.meta as any)?.durationMs) || (analytics.duration?.durationMs ?? 0);
+    const userPct = (analytics.talkTimeMs?.userPct ?? analytics.talkTime?.userPct ?? 0) / 100;
+    const asstPct = (analytics.talkTimeMs?.assistantPct ?? analytics.talkTime?.assistantPct ?? 0) / 100;
+    // Recompute quick cut-in interruptions per minute (user before assistant <2s)
+    const stamps = report.turns.map(t=> Number(t.at)).filter(n=> Number.isFinite(n));
+    const durationMs = durMs || (stamps.length ? Math.max(...stamps) - Math.min(...stamps) : 0);
+    let interruptCount = 0;
+    for (let i=1;i<report.turns.length;i++){
+      const t = report.turns[i];
+      if (t.speaker !== 'user') continue;
+      let j=i-1; while (j>=0 && report.turns[j].speaker==='user') j--; 
+      if (j>=0 && report.turns[j].speaker==='assistant'){
+        const delta = Math.abs((Number(t.at)||0) - (Number(report.turns[j].at)||0));
+        if (delta < 2000) interruptCount += 1;
       }
-      const mins = durationMs > 0 ? (durationMs/60000) : 0;
-      const ipm = mins ? (interruptCount / mins) : 0;
-      const depth = analytics.followUpChainDepth ?? 0;
-      const overallSummary = buildInterviewSummary({
-        durationMs,
-        talkRatio: { interviewer: userPct, participant: asstPct },
-        interruptionsPerMin: ipm,
-        followupDepth: depth,
-      });
-      (report as any).overallSummary = overallSummary;
-    } catch {}
-    return NextResponse.json({ report, analytics });
+    }
+    const mins = durationMs > 0 ? (durationMs/60000) : 0;
+    const ipm = mins ? (interruptCount / mins) : 0;
+    const depth = analytics.followUpChainDepth ?? 0;
+    const overallSummary = buildInterviewSummary({
+      durationMs,
+      talkRatio: { interviewer: userPct, participant: asstPct },
+      interruptionsPerMin: ipm,
+      followupDepth: depth,
+    });
+    (report as any).overallSummary = overallSummary;
+    const scoreReason = String((analytics as any)?.score?.scoreReason || '').trim() || undefined;
+    (report as any).scoreReason = scoreReason;
+    return NextResponse.json({ report, analytics, overallSummary, scoreReason }, { headers: { 'Content-Type': 'application/json; charset=utf-8' } });
   } catch {
-    return NextResponse.json({ report });
+    return NextResponse.json({ report }, { headers: { 'Content-Type': 'application/json; charset=utf-8' } });
   }
 }

@@ -1,5 +1,16 @@
 import type { Turn } from "@/types/report";
 
+// Normalize quotes/dashes to avoid mojibake in UI
+function normalizeText(s: string): string {
+  try {
+    let t = String(s || '');
+    t = t.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/[\u2013\u2014]/g, '-');
+    // Common mojibake from UTF-8 read as Latin-1
+    t = t.replace(/â€œ|â€�/g, '"').replace(/â€™/g, "'").replace(/â€“|â€”/g, '-');
+    return t;
+  } catch { return String(s || ''); }
+}
+
 // Basic helpers
 export const isQ = (t: string) => /\?$/.test(String(t || '').trim());
 export const words = (t: string) => String(t || '').trim().split(/\s+/).filter(Boolean);
@@ -431,7 +442,18 @@ export function buildInsightsV3(turns: Turn[]) {
   for (const t of turns) { if (t.speaker==='user' && (isOpen(t.text) || /\b(thanks|appreciate|how are you)\b/i.test(t.text||''))) { strengthQuote = t.text; break; } }
   const improvementPair = rewrites[0] ? { original: rewrites[0].original, suggested: rewrites[0].rewrite } : null;
   const examples = { strengthQuote: strengthQuote || null, improvement: improvementPair };
-  const payload = { strengths: st, missed: mo, recommendations: recs, summaryLine, rewrites, narrative: { summaryParagraph }, strengthsBulletPoints, improvementBulletPoints, nextPracticePrompts, examples };
+  const payload = {
+    strengths: st.map(normalizeText),
+    missed: mo.map(normalizeText),
+    recommendations: recs.map(normalizeText),
+    summaryLine: normalizeText(summaryLine),
+    rewrites: rewrites.map((r) => ({ original: normalizeText(r.original), rewrite: normalizeText(r.rewrite) })),
+    narrative: { summaryParagraph: normalizeText(summaryParagraph) },
+    strengthsBulletPoints: strengthsBulletPoints.map(normalizeText),
+    improvementBulletPoints: improvementBulletPoints.map(normalizeText),
+    nextPracticePrompts: nextPracticePrompts.map(normalizeText),
+    examples: { strengthQuote: strengthQuote ? normalizeText(strengthQuote) : null, improvement: improvementPair ? { original: normalizeText(improvementPair.original), suggested: normalizeText(improvementPair.suggested) } : null },
+  } as any;
   return payload;
 }
 
