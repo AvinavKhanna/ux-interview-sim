@@ -595,6 +595,10 @@ export function buildAnalytics(turns: Turn[]): AnalyticsReport {
     score = { ...score, total: capped, capped: true, cappedReason: 'Capped at 40 due to short session (<6 turns or <2 min).' };
   }
   const quotes = buildInsightsQuotes(turns);
+  const quotesNorm = {
+    strengths: (quotes.strengths || []).map((q) => ({ quote: normalizeText(q.quote), note: normalizeText(q.note) })), 
+    improvements: (quotes.improvements || []).map((q) => ({ quote: normalizeText(q.quote), note: normalizeText(q.note), suggestion: q.suggestion ? normalizeText(q.suggestion) : undefined })), 
+  };
   const chainDepth = followUpChainDepth(turns);
   return {
     talkTime: talkTimeRatio(turns),
@@ -608,7 +612,7 @@ export function buildAnalytics(turns: Turn[]): AnalyticsReport {
     insights: buildInsightsV3(turns),
     fillers,
     dataQuality: { sufficient: !insufficient, notes: dataQualityNotes },
-    insightsQuotes: quotes,
+    insightsQuotes: quotesNorm,
     followUpChainDepth: chainDepth,
   };
 }
