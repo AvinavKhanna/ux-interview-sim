@@ -1,5 +1,4 @@
 import { buildAnalytics, formatMmSs } from "@/lib/analysis/interview";
-import { buildInterviewSummary } from "@/lib/analytics/summary";
 import ReportPollClient from "./ReportPollClient";
 import type { SessionReport, Turn } from "@/types/report";
 
@@ -126,26 +125,6 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     ? meta.durationMs
     : (started && stopped ? (stopped.getTime() - started.getTime()) : 0);
   const durationLabel = formatMmSs(durationMs);
-  const overallFallback = (() => {
-    try {
-      const userPct = (analytics.talkTimeMs?.userPct ?? analytics.talkTime?.userPct ?? 0) / 100;
-      const asstPct = (analytics.talkTimeMs?.assistantPct ?? analytics.talkTime?.assistantPct ?? 0) / 100;
-      let cnt = 0;
-      for (let i = 1; i < report.turns.length; i++) {
-        const t = report.turns[i];
-        if (t.speaker !== "user") continue;
-        let j = i - 1; while (j >= 0 && report.turns[j].speaker === "user") j--;
-        if (j >= 0 && report.turns[j].speaker === "assistant") {
-          const d = Math.abs((Number(t.at)||0) - (Number(report.turns[j].at)||0));
-          if (d < 2000) cnt += 1;
-        }
-      }
-      const mins = durationMs > 0 ? (durationMs/60000) : 0;
-      const ipm = mins ? (cnt / mins) : 0;
-      const depth = (analytics as any)?.followUpChainDepth ?? 0;
-      return buildInterviewSummary({ durationMs, talkRatio: { interviewer: userPct, participant: asstPct }, interruptionsPerMin: ipm, followupDepth: depth });
-    } catch { return ""; }
-  })();
   const fillerUser = analytics.fillers?.user ?? 0;
   const fillerTop = analytics.fillers?.top ?? [];
   const dq = (analytics as any).dataQuality as { sufficient?: boolean; notes?: string[] } | undefined;
@@ -229,17 +208,19 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           <div>Started: {started ? started.toLocaleString() : 'unknown'}</div>
           <div>Stopped: {stopped ? stopped.toLocaleString() : 'unknown'}</div>
           <div>Duration: {durationLabel}</div>
-          {(() => { const s = String((report as any).overallSummary || '').trim(); return s ? (<p className="text-sm text-gray-700 mt-1">{s}</p>) : null; })()}
-          {(() => {
-          {(() => { const reason = String((report as any)?.scoreReason || '').trim(); return reason ? (<div className="text-xs italic text-gray-500 mt-1">Reason: {reason}</div>) : null; })()}
-            return reason ? (<div className="text-xs italic text-gray-500 mt-1">Reason: {reason}</div>) : null;
-          })()}
+          {Boolean((report as any)?.overallSummary) ? (
+            <p className="text-sm text-gray-700 mt-1">{String((report as any).overallSummary)}</p>
+          ) : null}
+          {Boolean((report as any)?.scoreReason) ? (
+            <div className="text-xs italic text-gray-500 mt-1">Reason: {String((report as any).scoreReason)}</div>
+          ) : null}
           {meta.personaSummary ? (
             <div className="mt-2 text-gray-600">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} · {String((meta.personaSummary as any)?.techFamiliarity ?? '')} · {String((meta.personaSummary as any)?.personality ?? '')}</div>
           ) : null}
           {(meta as any)?.emotionSummary ? (
             <div className="text-xs text-gray-600">Tone (Hume): {(meta as any).emotionSummary}</div>
           ) : null}
+          <p className="text-sm text-gray-700 mt-2">Session overview: {summaryText}</p>
         </div>
       </section>
 
