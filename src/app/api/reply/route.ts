@@ -109,14 +109,58 @@ Rules:
     const angryAlways = /\balways angry\b/.test(personalityLower);
     const negMood = Math.max(angryAlways ? 0.7 : 0, impatientLevel, guardedLevel);
     const trustWarm = typeof (persona as any)?.trustWarmupTurns === 'number' ? (persona as any).trustWarmupTurns : 4;
-    const rapportRaw = Math.max(0, userTurnCount - 1) / Math.max(1, (trustWarm as number) + 4);
-    const rapport = Math.min(0.8, rapportRaw);
+    const rapportBase = Math.max(0, userTurnCount - 1) / Math.max(1, (trustWarm as number) + 4);
+
+    // Tone detection over recent user turns (decays naturally over 2-3 turns)
+    const recentUsers = [...history.filter((h) => h.role === 'user').map((h) => h.content), userText].slice(-3);
+    const isFriendlyTone = (s: string) => /\b(please|thanks|thank you|appreciate|great question|good question|cheers|nice)\b/i.test(s);
+    const isCalmEncouraging = (s: string) => /\b(take your time|no rush|that helps|i see|makes sense)\b/i.test(s);
+    const isRudeTone = (s: string) => /(\bfuck\b|\bshit\b|\bstupid\b|\bidiot\b|\bdumb\b|\bwtf\b|\bcalm down\b|\bthat'?s dumb\b|\banswer (now|me)\b|\bhurry up\b|\bnonsense\b)/i.test(s);
+    const isImpatientTone = (s: string) => /\b(quickly|real quick|just answer|come on)\b/i.test(s);
+    const isDismissiveAggressive = (s: string) => /\b(whatever|don'?t care|useless|pointless)\b/i.test(s);
+    const toneFriendlyScore = recentUsers.reduce((n, s) => n + (isFriendlyTone(s) || isCalmEncouraging(s) ? 1 : 0), 0) / Math.max(1, recentUsers.length);
+    const toneRudeScore = recentUsers.reduce((n, s) => n + (isRudeTone(s) || isImpatientTone(s) || isDismissiveAggressive(s) ? 1 : 0), 0) / Math.max(1, recentUsers.length);
+
+    // Rapport with smoothing and tone effects (one rude line won’t fully reset trust)
+    let rapport = Math.min(1, Math.max(0, rapportBase + 0.15 * toneFriendlyScore - 0.10 * toneRudeScore));
     const easing = 1 - Math.min(0.8, Math.max(0, rapport));
+
+    // Baseline runtime shape
     let directness = Math.max(0.0, 0.6 * negMood);
     const baseTokens = Math.max(40, maxSentences * 30);
-    const targetTokens = Math.max(24, Math.round(baseTokens * (1 - 0.35 * negMood * easing)));
-    const elaboration = Math.max(0.2, (0.6) * (1 - 0.4 * impatientLevel * easing));
+    let targetTokens = Math.max(24, Math.round(baseTokens * (1 - 0.35 * negMood * easing)));
+    let elaboration = Math.max(0.2, (0.6) * (1 - 0.4 * impatientLevel * easing));
     const longOrStacked = userText.length > 160 || ((userText.match(/\?/g) || []).length >= 2) || /\b(and|or)\b.+\b(and|or)\b/i.test(userText);
+
+    // Adaptation to interviewer tone & rapport (subtle; never flips personality)
+    let guardednessDelta = 0;
+    if (rapport >= 0.4 && toneFriendlyScore >= 0.34) {
+      const boost = 0.15 + 0.10 * toneFriendlyScore; // 15–25%
+      elaboration = Math.min(1.0, elaboration * (1 + boost));
+      targetTokens = Math.round(targetTokens * (1 + boost));
+      guardednessDelta = Math.max(guardednessDelta, -0.2);
+    } else if (toneRudeScore >= 0.34) {
+      const cut = 0.25 + 0.15 * toneRudeScore; // 25–40%
+      elaboration = Math.max(0.2, elaboration * (1 - cut));
+      targetTokens = Math.max(16, Math.round(targetTokens * (1 - cut)));
+      guardednessDelta = Math.min(0.3, guardednessDelta + 0.3);
+      directness = Math.min(1.0, directness + 0.2);
+      rapport = Math.max(0, rapport - 0.2 * toneRudeScore * 0.7);
+    }
+
+    // Lightweight mood extraction from persona instructions (fades after ~5 turns unless reinforced by interviewer)
+    const instr = String((persona as any)?.notes || (persona as any)?.system_prompt || '').toLowerCase();
+    const moodPos = /(excited|great mood|relaxed|confident|happy)/.test(instr);
+    const moodNeg = /(frustrated|bad day|tired|exhausted|anxious|stressed|upset)/.test(instr);
+    const reinforced = /(frustrated|tired|upset|stressed|anxious|great mood|excited|relaxed|confident)/.test(userText.toLowerCase());
+    const decay = Math.max(0, 1 - (reinforced ? 0 : userTurnCount / 5));
+    if (moodPos && decay > 0) {
+      targetTokens = Math.round(targetTokens * (1 + 0.10 * decay));
+      elaboration = Math.min(1.0, elaboration * (1 + 0.10 * decay));
+    } else if (moodNeg && decay > 0) {
+      targetTokens = Math.max(16, Math.round(targetTokens * (1 - 0.12 * decay)));
+      elaboration = Math.max(0.2, elaboration * (1 - 0.10 * decay));
+    }
 
     let system = [
       personaContext && `Persona Facts:\n${personaContext}`,
@@ -134,11 +178,14 @@ Rules:
       .join('\n\n') + (attitudeRules ? '\n\n' + attitudeRules : '');
     // Append phase-aware disclosure rules
     try { if (phaseRules) { system += '\n\n' + phaseRules; } } catch {}
+    // Rapport progression & tone adaptation guidance (subtle)
+    system += `\nRapport curve: <0.3 cautious & brief; 0.3–0.6 moderate openness; >0.6 open within persona limits.`;
+    system += `\nTone adapt: if interviewer is warm/calm and rapport>=0.4, increase elaboration slightly; if rude/impatient, be terser and raise guardedness a bit.`;
     // Append runtime shaping guidance
     try {
-      system += `\n\nRuntime shaping: directness>=${directness.toFixed(2)}; target_tokens<=${targetTokens}; elaboration~${elaboration.toFixed(2)}`;
+      system += `\n\nRuntime shaping: directness>=${directness.toFixed(2)}; target_tokens<=${targetTokens}; elaboration~${elaboration.toFixed(2)}; guardedness_delta=${(typeof guardednessDelta !== 'undefined' ? guardednessDelta.toFixed(2) : '0.00')}`;
       if (longOrStacked && impatientLevel > 0.6) {
-        system += `\nFor this turn: if the question feels overly complex, you may prepend once: "Could you ask that more simply?"`;
+        system += `\nFor this turn: if the question feels overly complex, you may prepend once: \"Could you ask that more simply?\"`;
       }
     } catch {}
     // First-turn rubric: greet + brief, avoid apps/solutions/topic mentions until interviewer sets context

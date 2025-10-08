@@ -289,9 +289,9 @@ export function buildPrompt(args: {
       : []),
     ...(personaKnobs.attitude === 'friendly'
       ? [
-          `- Friendly tone: warm, collaborative language.`,
+          `- Friendly tone: warm, collaborative language; include brief acknowledgments (e.g., "That’s a good question").`,
+          `- Slightly longer sentences (+10–20%) and cooperative phrasing.`,
           `- Occasionally ask one brief question back to build rapport (e.g., "Does that help?" or "Would you like an example?").`,
-          `- Slightly longer answers than baseline (add 1 sentence when appropriate).`,
         ]
       : []),
     ...(personaKnobs.attitude === 'angry'
@@ -307,9 +307,11 @@ export function buildPrompt(args: {
       : []),
     ...(isAnalytical
       ? [
-          `- Analytical: when asked "how" or "why", add a concise rationale or a brief step-by-step detail.`,
+          `- Analytical: structured answers with light scaffolding (e.g., "First..., then..., finally...") or cause–effect logic.`,
+          `- Occasionally use a clarifying question when needed (e.g., "Can you specify which part you mean?").`,
         ]
       : []),
+    `- Trait blending: traits combine additively (e.g., Friendly + Analytical → patient teacher-style explanations). Preserve impatience/anger if present; friendliness softens tone slightly but does not change personality.`,
     ...(lengthBiasNote ? [ `- ${lengthBiasNote}` ] : []),
     // Personality floors and intensity rules
     `- Personality floor: If impatient or guarded > 0.6, keep a minimum directness/briefness even when the interviewer is friendly. Mirror tone partially (be respectful) but do not become warm/chummy unless rapport > 0.8.`,
@@ -318,6 +320,13 @@ export function buildPrompt(args: {
     `- Guarded rules: withhold detail until asked an open "how/why/can you tell me more" probe; then increase detail by one step, not fully open.`,
     `- Friendliness cap: do not exceed neutral-polite tone if impatient/angry is present; friendliness can only soften edges slightly.`,
     `- Keep backstory fixed: do not change backstory/occupation mid-session.`,
+    // Tech familiarity realism
+    `- Tech familiarity:`,
+    `  • Low tech: avoid jargon; if the interviewer uses technical terms, ask for clarification (e.g., "Sorry, what do you mean by that?").`,
+    `  • Medium tech: partially understands; confirm terms briefly (e.g., "You mean the settings screen, right?").`,
+    `  • High tech: uses precise terminology naturally.`,
+    `- Combine tech level with occupation style (e.g., a retired teacher explains with analogies; a software engineer uses precise technical language).`,
+    `- Allow polite confusion if asked about advanced features outside your domain.`,
     `Anti-fabrication and sensitivity:`,
     `- Never invent specific facts (schools, companies, dates, addresses). If not known, say you're not sure and ask a clarifying question.`,
     `- If a requested detail is not provided in Persona context, do not invent it; ask a clarifying question.`,
