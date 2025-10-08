@@ -211,6 +211,10 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           {Boolean((report as any).overallSummary) ? (
             <p className="text-sm text-gray-700 mt-1">{String((report as any).overallSummary)}</p>
           ) : null}
+          {(() => {
+            const reason = String((analytics as any)?.score?.scoreReason || (report as any)?.scoreReason || '').trim();
+            return reason ? (<div className="text-xs italic text-gray-500 mt-1">Reason: {reason}</div>) : null;
+          })()}
           {meta.personaSummary ? (
             <div className="mt-2 text-gray-600">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} · {String((meta.personaSummary as any)?.techFamiliarity ?? '')} · {String((meta.personaSummary as any)?.personality ?? '')}</div>
           ) : null}

@@ -14,6 +14,7 @@ type SessionCounters = {
   lastSuggestion?: string;
   lastSuggestionAt?: number;
   affirmedOnce?: boolean;
+  lastHintTurn?: number;
 };
 
 const counters = new Map<string, SessionCounters>();
@@ -30,7 +31,9 @@ function resolveSessionId(req: Request): string {
 function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
   const now = Date.now();
   const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] } as SessionCounters;
-  if (now - c.lastHintAt < policy.minGapMs) return true;
+  // Raise tip trigger frequency slightly: shrink gap by ~20%
+  const gap = Math.floor(policy.minGapMs * 0.8);
+  if (now - c.lastHintAt < gap) return true;
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
     c.countInWindow = 0;
@@ -48,6 +51,7 @@ function noteHint(sessionId: string, label?: string) {
   }
   c.lastHintAt = now;
   c.countInWindow += 1;
+  c.lastHintTurn = c.questionsSeen;
   if (label) {
     c.lastTipLabels = Array.isArray(c.lastTipLabels) ? c.lastTipLabels : [];
     c.lastTipLabels.push(label);
@@ -529,7 +533,12 @@ export async function POST(req: Request) {
     const q = String(sample?.question ?? sample?.context?.text ?? "");
     if (!q.trim()) return NextResponse.json({ hints: [] } satisfies CoachResponse);
     noteQuestion(sessionId);
-    if (blockedByPolicy(sessionId, policy)) return NextResponse.json({ hints: [] } satisfies CoachResponse);
+    // Policy gate with adaptive silence threshold (if no tip for ≥3 interviewer turns)
+    const isBlocked = blockedByPolicy(sessionId, policy);
+    const c = counters.get(sessionId) || { lastHintTurn: -999, questionsSeen: 0 } as SessionCounters;
+    const turnsSinceHint = Math.max(0, (c.questionsSeen || 0) - (c.lastHintTurn || -999));
+    const adaptiveOpen = isBlocked && turnsSinceHint >= 3;
+    if (isBlocked && !adaptiveOpen) return NextResponse.json({ hints: [] } satisfies CoachResponse);
 
     // Prefer client-provided context; otherwise derive it server-side
     const ctx = sample?.context && sample.context.text ? (sample.context as CoachContext) : buildContextFromSample(sessionId, sample);
