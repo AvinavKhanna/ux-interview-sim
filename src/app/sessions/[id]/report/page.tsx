@@ -1,4 +1,4 @@
-import { buildAnalytics, formatMmSs } from "@/lib/analysis/interview";
+Ôªøimport { buildAnalytics, formatMmSs } from "@/lib/analysis/interview";
 import { buildInterviewSummary } from "@/lib/analytics/summary";
 import ReportPollClient from "./ReportPollClient";
 import type { SessionReport, Turn } from "@/types/report";
@@ -167,9 +167,9 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     extraLines.push(`Follow-up questions: ${analytics.questionTypes.followUp}.`);
   }
   if (analytics.fillers?.perMinute) {
-    extraLines.push(`Filler rate ó You ${analytics.fillers.perMinute.user}/min, Participant ${analytics.fillers.perMinute.assistant}/min.`);
+    extraLines.push(`Filler rate ‚Äî You ${analytics.fillers.perMinute.user}/min, Participant ${analytics.fillers.perMinute.assistant}/min.`);
   }
-  extraLines.push(`Average response length ó You ${avgUserWords} words, Participant ${avgPersonaWords} words.`);
+  extraLines.push(`Average response length ‚Äî You ${avgUserWords} words, Participant ${avgPersonaWords} words.`);
   const summaryText = `${summaryParagraph}${summaryParagraph.endsWith('.') ? '' : '.'} ${extraLines.join(' ')}`.trim();
 
   return (
@@ -199,15 +199,15 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           </div>
           <div className="rounded border p-3 bg-white">
             <div className="text-sm text-gray-600 mb-1">Filler Words</div>
-            <div className="text-xs text-gray-700">You: {(analytics.fillers?.user ?? 0)} total{analytics.fillers?.perMinute ? ` ∑ ${analytics.fillers.perMinute.user}/min` : ''}</div>
-            <div className="text-xs text-gray-700">Participant: {(analytics.fillers?.assistant ?? 0)} total{analytics.fillers?.perMinute ? ` ∑ ${analytics.fillers.perMinute.assistant}/min` : ''}</div>
+            <div className="text-xs text-gray-700">You: {(analytics.fillers?.user ?? 0)} total{analytics.fillers?.perMinute ? ` ¬∑ ${analytics.fillers.perMinute.user}/min` : ''}</div>
+            <div className="text-xs text-gray-700">Participant: {(analytics.fillers?.assistant ?? 0)} total{analytics.fillers?.perMinute ? ` ¬∑ ${analytics.fillers.perMinute.assistant}/min` : ''}</div>
             {(() => {
               const you = (analytics.fillers?.userTop || analytics.fillers?.top || []) as any[];
               const them = ((analytics.fillers as any)?.assistantTop || []) as any[];
               return (
                 <div className="mt-1 space-y-1">
-                  <div className="text-xs text-gray-600">You ∑ Top terms: {you.length ? you.map((x:any)=>`${x.word} ${x.count}`).join(', ') : 'ó'}</div>
-                  <div className="text-xs text-gray-600">Participant ∑ Top terms: {them.length ? them.map((x:any)=>`${x.word} ${x.count}`).join(', ') : 'ó'}</div>
+                  <div className="text-xs text-gray-600">You ¬∑ Top terms: {you.length ? you.map((x:any)=>`${x.word} ${x.count}`).join(', ') : '‚Äî'}</div>
+                  <div className="text-xs text-gray-600">Participant ¬∑ Top terms: {them.length ? them.map((x:any)=>`${x.word} ${x.count}`).join(', ') : '‚Äî'}</div>
                 </div>
               );
             })()}
@@ -230,14 +230,12 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           <div>Stopped: {stopped ? stopped.toLocaleString() : 'unknown'}</div>
           <div>Duration: {durationLabel}</div>
           {(() => { const s = String((report as any).overallSummary || overallFallback || "").trim(); return s ? (<p className="text-sm text-gray-700 mt-1">{s}</p>) : null; })()}
-            <p className="text-sm text-gray-700 mt-1">{String((report as any).overallSummary)}</p>
-          ) : null}
           {(() => {
             const reason = String((analytics as any)?.score?.scoreReason || (report as any)?.scoreReason || '').trim();
             return reason ? (<div className="text-xs italic text-gray-500 mt-1">Reason: {reason}</div>) : null;
           })()}
           {meta.personaSummary ? (
-            <div className="mt-2 text-gray-600">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} ∑ {String((meta.personaSummary as any)?.techFamiliarity ?? '')} ∑ {String((meta.personaSummary as any)?.personality ?? '')}</div>
+            <div className="mt-2 text-gray-600">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} ¬∑ {String((meta.personaSummary as any)?.techFamiliarity ?? '')} ¬∑ {String((meta.personaSummary as any)?.personality ?? '')}</div>
           ) : null}
           {(meta as any)?.emotionSummary ? (
             <div className="text-xs text-gray-600">Tone (Hume): {(meta as any).emotionSummary}</div>
@@ -253,7 +251,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <div className="h-3 bg-gray-200 rounded overflow-hidden mt-1" title="Balance between your talk vs persona">
               <div className="h-3 bg-blue-600" style={{ width: `${analytics.talkTime.userPct}%` }} />
             </div>
-            <div className="text-xs text-gray-600 mt-1">You {analytics.talkTime.userPct}% ∑ Participant {analytics.talkTime.assistantPct}%</div>
+            <div className="text-xs text-gray-600 mt-1">You {analytics.talkTime.userPct}% ¬∑ Participant {analytics.talkTime.assistantPct}%</div>
             <div className="mt-2 text-sm flex items-center gap-2">
               <span>
                 Overall Score: <span className="font-semibold" title={String(score?.tooltip || '')}>{analytics.score.total}/100</span> <abbr title={String(score?.tooltip || '')} className="text-xs text-gray-500 align-middle cursor-help">?</abbr>
@@ -266,14 +264,14 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           <div className="rounded border p-3 bg-white">
             <div className="text-sm text-gray-600">Question Types</div>
             <div className="mt-1 text-xs text-gray-700">
-              Open {analytics.questions.open} ∑ Closed {analytics.questions.closed} ∑ Rapport {analytics.questions.rapport} ∑ Fact-check {analytics.questions.factcheck}
+              Open {analytics.questions.open} ¬∑ Closed {analytics.questions.closed} ¬∑ Rapport {analytics.questions.rapport} ¬∑ Fact-check {analytics.questions.factcheck}
             </div>
             <div className="text-xs text-gray-600 mt-1">Follow-up {analytics.questionTypes ? analytics.questionTypes.followUp : 0}</div>
             {/* Depth exploration chain intentionally removed per request */}
-            <div className="text-xs text-gray-600 mt-2">Avg response length: You {avgUserWords} words ∑ Participant {avgPersonaWords} words</div>
-            <div className="text-xs text-gray-600 mt-1">Turns: You {userTurns} ∑ Participant {personaTurns}</div>
-            <div className="text-xs text-gray-600 mt-1">Total words: You {userWords} ∑ Participant {personaWords}</div>
-            <div className="text-xs text-gray-600 mt-1">Fillers (you): {fillerUser}{fillerTop.length ? ` ó ` : ''}{fillerTop.map(x=>`${x.word} ${x.count}`).join(', ')}</div>
+            <div className="text-xs text-gray-600 mt-2">Avg response length: You {avgUserWords} words ¬∑ Participant {avgPersonaWords} words</div>
+            <div className="text-xs text-gray-600 mt-1">Turns: You {userTurns} ¬∑ Participant {personaTurns}</div>
+            <div className="text-xs text-gray-600 mt-1">Total words: You {userWords} ¬∑ Participant {personaWords}</div>
+            <div className="text-xs text-gray-600 mt-1">Fillers (you): {fillerUser}{fillerTop.length ? ` ‚Äî ` : ''}{fillerTop.map(x=>`${x.word} ${x.count}`).join(', ')}</div>
           </div>
           <div className="rounded border p-3 bg-white">
             <div className="text-sm text-gray-600">Session</div>
@@ -281,7 +279,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             {started ? <div className="text-xs text-gray-700">Started: {started.toLocaleString()}</div> : null}
             {stopped ? <div className="text-xs text-gray-700">Stopped: {stopped.toLocaleString()}</div> : null}
             {meta.personaSummary ? (
-              <div className="text-xs text-gray-600 mt-1">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} ∑ {String((meta.personaSummary as any)?.techFamiliarity ?? '')} ∑ {String((meta.personaSummary as any)?.personality ?? '')}</div>
+              <div className="text-xs text-gray-600 mt-1">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} ¬∑ {String((meta.personaSummary as any)?.techFamiliarity ?? '')} ¬∑ {String((meta.personaSummary as any)?.personality ?? '')}</div>
             ) : null}
           </div>
         </div>
@@ -291,11 +289,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <p className="text-sm text-gray-800 mt-1">{(analytics.insights as any)?.narrative?.summaryParagraph || `${analytics.insights.summaryLine}.`}</p>
             <ul className="list-disc list-inside text-sm text-gray-800 mt-2">
               {analytics.insights.strengths.length ? analytics.insights.strengths.map((s,i)=>(<li key={i}>{s}</li>)) : <li>Clear, respectful tone.</li>}
-              {(analytics.insights as any)?.examples?.strengthQuote ? (<li className="italic">ì{(analytics.insights as any).examples.strengthQuote}î</li>) : null}
+              {(analytics.insights as any)?.examples?.strengthQuote ? (<li className="italic">‚Äú{(analytics.insights as any).examples.strengthQuote}‚Äù</li>) : null}
             </ul>
             {Array.isArray((analytics as any)?.insightsQuotes?.strengths) ? (
               (analytics as any).insightsQuotes.strengths.slice(0,3).map((q: any, i: number) => (
-                <blockquote key={`s-${i}`} className="border-l-4 pl-3 italic text-gray-700">ì{q.quote}î ó {q.note}</blockquote>
+                <blockquote key={`s-${i}`} className="border-l-4 pl-3 italic text-gray-700">‚Äú{q.quote}‚Äù ‚Äî {q.note}</blockquote>
               ))
             ) : null}
           </div>
@@ -305,7 +303,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
               {((analytics.insights as any)?.improvementBulletPoints || []).map((t:string,i:number)=>(<li key={i}>{t}</li>))}
               {(analytics.insights as any)?.examples?.improvement ? (
                 <li>
-                  ì{(analytics.insights as any).examples.improvement.original}î ? <span className="font-medium">{(analytics.insights as any).examples.improvement.suggested}</span>
+                  ‚Äú{(analytics.insights as any).examples.improvement.original}‚Äù ? <span className="font-medium">{(analytics.insights as any).examples.improvement.suggested}</span>
                 </li>
               ) : null}
               {!((analytics.insights as any)?.improvementBulletPoints || []).length && !(analytics.insights as any)?.examples?.improvement ? (
@@ -314,7 +312,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             </ul>
             {Array.isArray((analytics as any)?.insightsQuotes?.improvements) ? (
               (analytics as any).insightsQuotes.improvements.slice(0,3).map((q: any, i: number) => (
-                <blockquote key={`i-${i}`} className="border-l-4 pl-3 italic text-gray-700">ì{q.quote}î ó {q.note}{q.suggestion ? ` (Try: ${q.suggestion})` : ''}</blockquote>
+                <blockquote key={`i-${i}`} className="border-l-4 pl-3 italic text-gray-700">‚Äú{q.quote}‚Äù ‚Äî {q.note}{q.suggestion ? ` (Try: ${q.suggestion})` : ''}</blockquote>
               ))
             ) : null}
           </div>
@@ -344,8 +342,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <Transcript turns={report.turns} />
           )}
         </details>
-        <div className="text-xs text-gray-600 mt-2">Total words: You {userWords} ∑ Participant {personaWords}</div>
-        <div className="text-xs text-gray-600">Total turns: You {userTurns} ∑ Participant {personaTurns}</div>
+        <div className="text-xs text-gray-600 mt-2">Total words: You {userWords} ¬∑ Participant {personaWords}</div>
+        <div className="text-xs text-gray-600">Total turns: You {userTurns} ¬∑ Participant {personaTurns}</div>
       </section>
 
       <section className="rounded border p-4">
