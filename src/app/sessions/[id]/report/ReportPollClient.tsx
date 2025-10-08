@@ -177,6 +177,13 @@ export default function ReportPollClient({ id }: { id: string }) {
           <div>Started: {started ? started.toLocaleString() : 'unknown'}</div>
           <div>Stopped: {stopped ? stopped.toLocaleString() : 'unknown'}</div>
           <div>Duration: {durationLabel}</div>
+          {Boolean((report as any).overallSummary) ? (
+            <p className="text-sm text-gray-700 mt-1">{String((report as any).overallSummary)}</p>
+          ) : null}
+          {(() => {
+            const reason = String((analytics as any)?.score?.scoreReason || (report as any)?.scoreReason || '').trim();
+            return reason ? (<div className="text-xs italic text-gray-500 mt-1">Reason: {reason}</div>) : null;
+          })()}
         </div>
       </section>
 

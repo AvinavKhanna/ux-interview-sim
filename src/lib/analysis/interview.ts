@@ -317,12 +317,34 @@ export function interviewScoreV2(turns: Turn[]) {
   if (durMs < 2*60_000) total -= 5; // short session penalty
   total = Math.max(0, Math.min(100, Math.round(total)));
 
+  // Build breakdown in legacy key format expected by UI (values approx. 0..20 scale)
+  const openScoreOld = Math.min(1, (totalQs ? q.open / Math.max(1, totalQs) : 0) / 0.5) * 20; // 0..20
+  const balanceWithinOld = tt.userPct >= 35 && tt.userPct <= 65 ? 1 : Math.max(0, 1 - (Math.abs((tt.userPct < 35 ? 35 : 65) - tt.userPct) / 35));
+  const balanceScoreOld = balanceWithinOld * 15; // 0..15
+  const misses = missedOpportunitiesV2(turns, 1000).length;
+  const followScoreOld = Math.max(0, 20 - misses * 5); // 0..20
+  const rapportScoreOld = q.rapport >= 1 ? 10 : 0; // 0..10
+  const factScoreOld = q.factcheck >= 1 ? 5 : 0; // 0..5
+  const tonePenaltyOld = Math.min(60, (profanityEvent ? 30 : 0) + (hostilityEvent ? 30 : 0));
+  const interruptPenaltyOld = (function(){
+    // Use a simple threshold: at least two quick cut-ins → 10pt penalty
+    let cnt = 0; for (let i=1;i<turns.length;i++){ const t=turns[i]; if (t.speaker!=='user') continue; let j=i-1; while(j>=0&&turns[j].speaker==='user') j--; if(j>=0&&turns[j].speaker==='assistant'){ const d=Math.abs((t.at||0)-(turns[j].at||0)); if(d<2000) cnt++; } }
+    return cnt >= 2 ? 10 : 0;
+  })();
+  const durMs2 = stamps.length ? Math.max(0, Math.max(...stamps) - Math.min(...stamps)) : 0;
+  const userQCount2 = turns.filter(t => t.speaker==='user' && /\?$/.test((t.text||'').trim())).length;
+  const depthPenaltyOld = (durMs2 < 2*60_000 ? 10 : 0) + (userQCount2 < 3 ? 10 : 0);
+
   const breakdown = [
-    { key: 'talkBalance', label: 'Talk Balance', value: Math.round(balanceScore * 100 * w.balance), reason: `You ${tt.userPct}% vs Participant ${tt.assistantPct}%` },
-    { key: 'questionVariety', label: 'Question Variety', value: Math.round(varietyScore * 100 * w.variety), reason: `${q.open} open, ${q.closed} closed; ${backToBackClosed} back-to-back closed` },
-    { key: 'followUpDepth', label: 'Follow-up Depth', value: Math.round(depthScore * 100 * w.depth), reason: `Longest chain ${depth}` },
-    { key: 'toneCivility', label: 'Tone/Civility', value: Math.round(civilityScore * 100 * w.civility), reason: (profanityEvent || hostilityEvent) ? 'disrespect detected' : 'respectful' },
-    { key: 'interruptions', label: 'Interruptions', value: Math.round(interruptScore * 100 * w.interruptions), reason: `${interruptCount} quick cut-ins (~${mins? ipm.toFixed(2):'0'}/min)` },
+    { key: 'openQuestions', label: 'Open Questions', value: Math.round(openScoreOld), reason: `${q.open} open out of ${Math.max(1,totalQs)}` },
+    { key: 'talkBalance', label: 'Talk Balance', value: Math.round(balanceScoreOld), reason: `You ${tt.userPct}% vs Participant ${tt.assistantPct}%` },
+    { key: 'followUps', label: 'Follow-ups', value: Math.round(followScoreOld), reason: `${misses} missed probes` },
+    { key: 'rapport', label: 'Rapport', value: rapportScoreOld, reason: q.rapport ? `${q.rapport} rapport turns` : 'none detected' },
+    { key: 'factCheck', label: 'Fact-check', value: factScoreOld, reason: q.factcheck ? `${q.factcheck} clarifying turns` : 'none detected' },
+    { key: 'toneCredit', label: 'Tone credit', value: 30, reason: 'Respectful tone baseline' },
+    { key: 'tonePenalty', label: 'Tone penalty', value: -tonePenaltyOld, reason: (profanityEvent || hostilityEvent) ? 'disrespect detected' : 'no penalty' },
+    { key: 'interruptions', label: 'Interruptions', value: -interruptPenaltyOld, reason: `${interruptCount} quick cut-ins (~${mins? ipm.toFixed(2):'0'}/min)` },
+    { key: 'depthPenalty', label: 'Depth penalty', value: -depthPenaltyOld, reason: `${durMs2 < 120000 ? '<2m' : 'duration ok'}, ${userQCount2 < 3 ? '<3 questions' : 'questions ok'}` },
   ];
   const subs = [
     { k: 'balance', v: balanceScore },
