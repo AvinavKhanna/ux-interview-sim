@@ -11,6 +11,28 @@ function normalizeText(s: string): string {
   } catch { return String(s || ''); }
 }
 
+// Strict ASCII-normalizer used for user-facing strings
+function normalizeTextSafe(s: string): string {
+  try {
+    let t = String(s ?? '');
+    t = t
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\u2013\u2014]/g, '-');
+    t = t
+      .replace(/\u00E2\u20AC\u0153/g, '"') // â€œ
+      .replace(/\u00E2\u20AC\u009D/g, '"') // â€
+      .replace(/\u00E2\u20AC\u02DC/g, "'") // â€˜
+      .replace(/\u00E2\u20AC\u2122/g, "'") // â€™
+      .replace(/\u00E2\u20AC\u2013/g, '-')  // â€“
+      .replace(/\u00E2\u20AC\u2014/g, '-')  // â€”
+      .replace(/\u00E2\u20AC\u00A6/g, '....'); // â€¦ → ....
+    return t.replace(/ {2,}/g, ' ');
+  } catch {
+    return String(s ?? '');
+  }
+}
+
 // Basic helpers
 export const isQ = (t: string) => /\?$/.test(String(t || '').trim());
 export const words = (t: string) => String(t || '').trim().split(/\s+/).filter(Boolean);
@@ -453,16 +475,16 @@ export function buildInsightsV3(turns: Turn[]) {
   const improvementPair = rewrites[0] ? { original: rewrites[0].original, suggested: rewrites[0].rewrite } : null;
   const examples = { strengthQuote: strengthQuote || null, improvement: improvementPair };
   const payload = {
-    strengths: st.map(normalizeText),
-    missed: mo.map(normalizeText),
-    recommendations: recs.map(normalizeText),
-    summaryLine: normalizeText(summaryLine),
-    rewrites: rewrites.map((r) => ({ original: normalizeText(r.original), rewrite: normalizeText(r.rewrite) })),
-    narrative: { summaryParagraph: normalizeText(summaryParagraph) },
-    strengthsBulletPoints: strengthsBulletPoints.map(normalizeText),
-    improvementBulletPoints: improvementBulletPoints.map(normalizeText),
-    nextPracticePrompts: nextPracticePrompts.map(normalizeText),
-    examples: { strengthQuote: strengthQuote ? normalizeText(strengthQuote) : null, improvement: improvementPair ? { original: normalizeText(improvementPair.original), suggested: normalizeText(improvementPair.suggested) } : null },
+    strengths: st.map(normalizeTextSafe),
+    missed: mo.map(normalizeTextSafe),
+    recommendations: recs.map(normalizeTextSafe),
+    summaryLine: normalizeTextSafe(summaryLine),
+    rewrites: rewrites.map((r) => ({ original: normalizeTextSafe(r.original), rewrite: normalizeTextSafe(r.rewrite) })),
+    narrative: { summaryParagraph: normalizeTextSafe(summaryParagraph) },
+    strengthsBulletPoints: strengthsBulletPoints.map(normalizeTextSafe),
+    improvementBulletPoints: improvementBulletPoints.map(normalizeTextSafe),
+    nextPracticePrompts: nextPracticePrompts.map(normalizeTextSafe),
+    examples: { strengthQuote: strengthQuote ? normalizeTextSafe(strengthQuote) : null, improvement: improvementPair ? { original: normalizeTextSafe(improvementPair.original), suggested: normalizeTextSafe(improvementPair.suggested) } : null },
   } as any;
   return payload;
 }
@@ -596,8 +618,8 @@ export function buildAnalytics(turns: Turn[]): AnalyticsReport {
   }
   const quotes = buildInsightsQuotes(turns);
   const quotesNorm = {
-    strengths: (quotes.strengths || []).map((q) => ({ quote: normalizeText(q.quote), note: normalizeText(q.note) })), 
-    improvements: (quotes.improvements || []).map((q) => ({ quote: normalizeText(q.quote), note: normalizeText(q.note), suggestion: q.suggestion ? normalizeText(q.suggestion) : undefined })), 
+    strengths: (quotes.strengths || []).map((q) => ({ quote: normalizeTextSafe(q.quote), note: normalizeTextSafe(q.note) })), 
+    improvements: (quotes.improvements || []).map((q) => ({ quote: normalizeTextSafe(q.quote), note: normalizeTextSafe(q.note), suggestion: q.suggestion ? normalizeTextSafe(q.suggestion) : undefined })), 
   };
   const chainDepth = followUpChainDepth(turns);
   return {

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import type { CoachSample, CoachResponse, CoachPolicy, CoachHint, CoachContext, CoachCategory } from "@/types/coach";
 import { getCoachTip } from "@/lib/coach/llmCoach";
 import { DefaultCoachPolicy } from "@/types/coach";
@@ -32,7 +32,7 @@ function blockedByPolicy(sessionId: string, policy: CoachPolicy): boolean {
   const now = Date.now();
   const c = counters.get(sessionId) || { lastHintAt: 0, windowStart: now, countInWindow: 0, questionsSeen: 0, lastTipLabels: [] } as SessionCounters;
   // Raise tip trigger frequency slightly: shrink gap by ~20%
-  const gap = Math.floor(policy.minGapMs * 0.8);
+  const gap = Math.floor(policy.minGapMs * 0.66);
   if (now - c.lastHintAt < gap) return true;
   if (now - c.windowStart > 60_000) {
     c.windowStart = now;
@@ -161,7 +161,7 @@ function isWhitelistedScoping(q: string): boolean {
   return false;
 }
 
-// Require ≥2 sensitive marker categories before warning
+// Require â‰¥2 sensitive marker categories before warning
 function countSensitiveMarkers(q: string): number {
   const s = q.toLowerCase();
   let n = 0;
@@ -271,7 +271,7 @@ function buildSuggestedQuestion(ctx: CoachContext, lastAssist: string | undefine
   const topic = kw[0] || 'that';
   const shortAssist = (lastAssist || '').split(/\s+/).filter(Boolean).length < 12;
   if (ctx.type === 'closed') {
-    // rewrite closed → open
+    // rewrite closed â†’ open
     const rewrite = ctx.text.replace(/^(is|are|do|did|does|can|could|will|would|have|has|had|was|were|should|shall)\b/i, 'How').replace(/\?\s*$/, '').trim();
     return rewrite ? `${rewrite}?` : `How do you keep track of ${topic}?`;
   }
@@ -295,21 +295,21 @@ function chooseHintFromContext(ctx: CoachContext): CoachHint | null {
   const lastAssistText = ctx.lastAssistant?.text || '';
   // Tone safety
   if (ctx.tone.hostile || ctx.tone.profanity) {
-    return { kind: 'boundary', category: category('Tone'), text: 'Tone check: soften language—this can shut the participant down. Try acknowledging and refocusing.' };
+    return { kind: 'boundary', category: category('Tone'), text: 'Tone check: soften languageâ€”this can shut the participant down. Try acknowledging and refocusing.' };
   }
   if (ctx.tone.impatient) {
-    return { kind: 'boundary', category: category('Tone'), text: 'Let them finish. Pausing 1–2s often yields richer details.' };
+    return { kind: 'boundary', category: category('Tone'), text: 'Let them finish. Pausing 1â€“2s often yields richer details.' };
   }
   // Boundary & ethics
   if (SENSITIVE_RE.test(lower) && !/(so (we|I) can|to help|because)/i.test(lower)) {
-    return { kind: 'boundary', category: category('Boundary'), text: "This may feel personal—frame the 'why' first, e.g., 'So we can tailor the flow, could you…'" };
+    return { kind: 'boundary', category: category('Boundary'), text: "This may feel personalâ€”frame the 'why' first, e.g., 'So we can tailor the flow, could youâ€¦'" };
   }
   // Follow-up discipline
   const shortAssist = ctx.lastAssistant && ctx.lastAssistant.wordCount > 0 && ctx.lastAssistant.wordCount < 12;
   const notFollowUp = ctx.type !== 'factcheck' && ctx.type !== 'rapport' && ctx.type !== 'admin';
   if (shortAssist && notFollowUp) {
     const suggestion = buildSuggestedQuestion(ctx, lastAssistText);
-    return { kind: 'probe', category: category('Follow-up'), text: `They gave a short answer—follow up on something concrete. Suggested: "${suggestion}"` };
+    return { kind: 'probe', category: category('Follow-up'), text: `They gave a short answerâ€”follow up on something concrete. Suggested: "${suggestion}"` };
   }
   // Question craft
   if (ctx.structure.doubleBarrel && ctx.type !== 'admin') {
@@ -447,7 +447,7 @@ function improvePhrasing(intent: string, topics: string[], tone: ReturnType<type
   }
   if (tone.direct && !tone.warm) {
     // soften a direct tone
-    ex[0] = ex[0].replace(/^/, 'If you’re comfortable, ');
+    ex[0] = ex[0].replace(/^/, 'If youâ€™re comfortable, ');
   }
   return ex.slice(0,2);
 }
@@ -468,7 +468,7 @@ function semanticCoach(sessionId: string, sample: any): CoachHint | null {
     let textParts: string[] = [];
     // Intent framing
     if (intent === 'rapport' && phase === 'early') {
-      textParts.push("Good rapport building — you’re helping the persona feel at ease.");
+      textParts.push("Good rapport building â€” youâ€™re helping the persona feel at ease.");
     } else if (intent === 'probing' && topics.length) {
       textParts.push(`Try following up on what they said about ${topics.join(', ')}.`);
     } else if (intent === 'closing' && phase !== 'late') {
@@ -480,13 +480,13 @@ function semanticCoach(sessionId: string, sample: any): CoachHint | null {
     // Persona reaction context
     if (react.stressed) textParts.push("The persona sounds stressed; slow your pace and acknowledge feelings.");
     else if (react.guarded) textParts.push("The persona seems defensive; consider a more curious, softer phrasing.");
-    else if (react.open && intent !== 'probing') textParts.push("They’re open right now — consider a gentle probe.");
+    else if (react.open && intent !== 'probing') textParts.push("Theyâ€™re open right now â€” consider a gentle probe.");
 
-    // Double‑barrel caution, but allow benign pairs
+    // Doubleâ€‘barrel caution, but allow benign pairs
     if (hasDoubleBarrel(q)) textParts.push("This reads as two questions; ask one at a time to keep them focused.");
 
     const examples = improvePhrasing(intent, topics, tone);
-    if (examples.length) textParts.push(`Examples: “${examples[0]}”${examples[1] ? ` | “${examples[1]}”` : ''}`);
+    if (examples.length) textParts.push(`Examples: â€œ${examples[0]}â€${examples[1] ? ` | â€œ${examples[1]}â€` : ''}`);
 
     // Map to hint kind
     let kind: CoachHint['kind'] = 'probe';
@@ -533,11 +533,11 @@ export async function POST(req: Request) {
     const q = String(sample?.question ?? sample?.context?.text ?? "");
     if (!q.trim()) return NextResponse.json({ hints: [] } satisfies CoachResponse);
     noteQuestion(sessionId);
-    // Policy gate with adaptive silence threshold (if no tip for ≥3 interviewer turns)
+    // Policy gate with adaptive silence threshold (if no tip for â‰¥3 interviewer turns)
     const isBlocked = blockedByPolicy(sessionId, policy);
     const c = counters.get(sessionId) || { lastHintTurn: -999, questionsSeen: 0 } as SessionCounters;
     const turnsSinceHint = Math.max(0, (c.questionsSeen || 0) - (c.lastHintTurn || -999));
-    const adaptiveOpen = isBlocked && turnsSinceHint >= 3;
+    const adaptiveOpen = isBlocked && turnsSinceHint >= 2;
     if (isBlocked && !adaptiveOpen) return NextResponse.json({ hints: [] } satisfies CoachResponse);
 
     // Prefer client-provided context; otherwise derive it server-side
@@ -579,7 +579,7 @@ export async function POST(req: Request) {
         const cs = countersState as SessionCounters;
         if (cs.lastSuggestion && !cs.affirmedOnce && ctx.text.toLowerCase().includes(String(cs.lastSuggestion).toLowerCase())) {
           if (!blockedByPolicy(sessionId, policy)) {
-            tip = { label: 'Affirm good move', message: 'Nice follow-up—now ask for an example', severity: 'info' };
+            tip = { label: 'Affirm good move', message: 'Nice follow-upâ€”now ask for an example', severity: 'info' };
           }
           cs.affirmedOnce = true;
           counters.set(sessionId, cs);
@@ -604,30 +604,30 @@ export async function POST(req: Request) {
 
       // Emotion-aware de-escalate
       if (!tip && react.stressed && labelNotRecent('De-escalate')) {
-        tip = formatTip('De-escalate', "I'm hearing some frustration. That sounds tough—what led to that?");
+        tip = formatTip('De-escalate', "I'm hearing some frustration. That sounds toughâ€”what led to that?");
       }
       // Sensitive ask
       else if (!tip && intents.primary === 'sensitive' && labelNotRecent('Sensitive')) {
-        tip = formatTip('Sensitive', 'This can be personal. Give a reason and an opt-out.', 'To tailor the study, could you share…? Totally fine to skip.');
+        tip = formatTip('Sensitive', 'This can be personal. Give a reason and an opt-out.', 'To tailor the study, could you shareâ€¦? Totally fine to skip.');
       }
       // Follow-up opportunity: long answer but current turn not follow-up
       else if (!tip && lastAssistWords >= 18 && intents.primary !== 'follow_up' && labelNotRecent('Follow-up chance')) {
-        tip = formatTip('Follow-up chance', `There’s something to unpack there. Earlier you mentioned ${topic}—what made that difficult?`);
+        tip = formatTip('Follow-up chance', `Thereâ€™s something to unpack there. Earlier you mentioned ${topic}â€”what made that difficult?`);
       }
-      // Closed → Open (and not a clarifying confirm)
-      else if (!tip && intents.primary === 'closed_question' && labelNotRecent('Closed → Open')) {
+      // Closed â†’ Open (and not a clarifying confirm)
+      else if (!tip && intents.primary === 'closed_question' && labelNotRecent('Closed â†’ Open')) {
         const suggestion = buildSuggestedQuestion(ctx, lastAssist) || `How did you handle ${topic}?`;
-        tip = formatTip('Closed → Open', 'This may limit detail. Try:', suggestion);
+        tip = formatTip('Closed â†’ Open', 'This may limit detail. Try:', suggestion);
       }
       // Clarify gently
       else if (!tip && hasDoubleBarrel(ctx.text) && labelNotRecent('Clarify gently')) {
         tip = formatTip('Clarify gently', `Quick check: When you say it, do you mean ${topic} A or B?`);
       }
-      // Rapport → Specifics (mid/late only)
+      // Rapport â†’ Specifics (mid/late only)
       else if (!tip && (intents.primary === 'greeting' || intents.primary === 'scope_setting')) {
         // no tip
-      } else if (!tip && (intents.primary === 'open_question' || intents.primary === 'bio_setup') && phase !== 'early' && labelNotRecent('Rapport → Specifics')) {
-        tip = formatTip('Rapport → Specifics', 'Nice start. When you’re ready, zoom in:', `What’s the most frustrating part of ${topic}?`);
+      } else if (!tip && (intents.primary === 'open_question' || intents.primary === 'bio_setup') && phase !== 'early' && labelNotRecent('Rapport â†’ Specifics')) {
+        tip = formatTip('Rapport â†’ Specifics', 'Nice start. When youâ€™re ready, zoom in:', `Whatâ€™s the most frustrating part of ${topic}?`);
       }
     }
 
@@ -636,6 +636,12 @@ export async function POST(req: Request) {
 
     // Enforce anti-spam label repeat and note hint
     if (tip) {
+      // If adaptive open triggered and still no tip, fallback to heuristic/semantic hints
+      if (!tip && !hint && typeof adaptiveOpen !== "undefined" && adaptiveOpen) {
+        try {
+          hint = chooseHintFromContext(ctx) || semanticCoach(sessionId, sample) || await maybeLLM(sample) || heuristicCoach(sample, policy);
+        } catch {}
+      }
       if (labelNotRecent(tip.label)) {
         noteHint(sessionId, tip.label);
         // Record suggestion for one-time affirmation if present
@@ -679,10 +685,10 @@ export async function POST(req: Request) {
             (tip as any).message = cap(`Probe: ${content}`, 140);
             delete (tip as any).suggestion;
           } else if (lbl.includes('sensitive')) {
-            (tip as any).message = `Reframe: Give a brief reason and an opt-out, e.g., ‘To tailor this, could you share…? Totally fine to skip.’`;
+            (tip as any).message = `Reframe: Give a brief reason and an opt-out, e.g., â€˜To tailor this, could you shareâ€¦? Totally fine to skip.â€™`;
             delete (tip as any).suggestion;
           } else if (lbl.includes('affirm')) {
-            (tip as any).message = `Affirm: Nice follow-up—now ask for an example`;
+            (tip as any).message = `Affirm: Nice follow-upâ€”now ask for an example`;
             delete (tip as any).suggestion;
           } else {
             // Fallback: if suggestion exists, treat as Try; else Probe
@@ -708,7 +714,7 @@ export async function POST(req: Request) {
           const t = String((hint as any).text || '').trim();
           if (k === 'probe') (hint as any).text = `Probe: ${t}`;
           else if (k === 'clarify') (hint as any).text = `Try: ${t}`;
-          else if (k === 'boundary') (hint as any).text = `Reframe: Give a brief reason and an opt-out, e.g., ‘To tailor this, could you share…? Totally fine to skip.’`;
+          else if (k === 'boundary') (hint as any).text = `Reframe: Give a brief reason and an opt-out, e.g., â€˜To tailor this, could you shareâ€¦? Totally fine to skip.â€™`;
           else if (k === 'praise' || k === 'rapport') (hint as any).text = `Affirm: ${t}`;
           // Audience guard for legacy hints
           (hint as any).text = (hint as any).text.replace(/\byou are\b/gi, 'they are').replace(/\byour\b/gi, 'their');
@@ -745,3 +751,4 @@ export async function POST(req: Request) {
     return NextResponse.json({ hints: [], tip: null } satisfies CoachResponse, { status: 200 });
   }
 }
+

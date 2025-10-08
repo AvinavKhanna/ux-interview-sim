@@ -5,6 +5,28 @@ export type SummaryInput = {
   followupDepth: number; // max chain length
 };
 
+// Normalize only quotes/dashes/ellipsis and fix common mojibake sequences.
+function normalizeText(s: string): string {
+  try {
+    let t = String(s ?? '');
+    t = t
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\u2013\u2014]/g, '-');
+    t = t
+      .replace(/\u00E2\u20AC\u0153/g, '"')
+      .replace(/\u00E2\u20AC\u009D/g, '"')
+      .replace(/\u00E2\u20AC\u02DC/g, "'")
+      .replace(/\u00E2\u20AC\u2122/g, "'")
+      .replace(/\u00E2\u20AC\u2013/g, '-')
+      .replace(/\u00E2\u20AC\u2014/g, '-')
+      .replace(/\u00E2\u20AC\u00A6/g, '....');
+    return t.replace(/ {2,}/g, ' ');
+  } catch {
+    return String(s ?? '');
+  }
+}
+
 function mmss(ms: number): string {
   if (!ms || ms < 0) return '00:00';
   const totalSec = Math.round(ms / 1000);
@@ -43,6 +65,5 @@ export function buildInterviewSummary(s: SummaryInput): string {
   if (suggestion) parts.push(suggestion);
   let out = parts.join(' ');
   if (out.length > 240) out = out.slice(0, 237).replace(/\s+\S*$/, '') + '...';
-  return out;
+  return normalizeText(out);
 }
-

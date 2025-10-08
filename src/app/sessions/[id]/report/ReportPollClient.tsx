@@ -1,29 +1,31 @@
-﻿'use client';
+"use client";
 
-import * as React from 'react';
-import type { SessionReport, Turn } from '@/types/report';
-import { buildAnalytics, formatMmSs } from '@/lib/analysis/interview';
+import * as React from "react";
+import type { SessionReport, Turn } from "@/types/report";
+import { buildAnalytics, formatMmSs } from "@/lib/analysis/interview";
 
 function fmt(ts: number) {
   const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 function toTxt(turns: Turn[]) {
-  return turns.map((t) => `${fmt(t.at)} [${t.speaker}] ${t.text}`).join('\n');
+  return turns.map((t) => `${fmt(t.at)} [${t.speaker}] ${t.text}`).join("\n");
 }
 
 function toCsv(turns: Turn[]) {
   const esc = (s: string) => '"' + s.replace(/"/g, '""') + '"';
   const rows = turns.map((t) => `${t.at},${t.speaker},${esc(t.text)}`);
-  return `timestamp,speaker,text\n${rows.join('\n')}`;
+  return `timestamp,speaker,text\n${rows.join("\n")}`;
 }
 
 function dl(name: string, mime: string, data: string) {
   const blob = new Blob([data], { type: mime });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = name; a.click();
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -41,26 +43,28 @@ function Downloads({ report }: { report: SessionReport }) {
     <hr/>
     ${report.turns.map(t=>`<div class="line">[${fmt(t.at)}] <strong>${t.speaker==='user'?'You':'Participant'}:</strong> ${String(t.text).replace(/</g,'&lt;')}</div>`).join('')}
     </body></html>`;
-    const w = window.open('', '_blank');
+    const w = window.open("", "_blank");
     if (!w) return;
     w.document.open();
     w.document.write(html);
     w.document.close();
-    setTimeout(()=>{ try { w.focus(); w.print(); } catch {} }, 250);
+    setTimeout(() => {
+      try { w.focus(); w.print(); } catch {}
+    }, 250);
   };
   return (
     <div className="flex flex-wrap gap-2">
-      <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.txt`, 'text/plain', txt)}>Download TXT</button>
+      <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.txt`, "text/plain", txt)}>Download TXT</button>
       <button className="px-2 py-1 rounded border" onClick={printPdf}>Save as PDF</button>
-      <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.json`, 'application/json', json)}>Download JSON</button>
-      <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.csv`, 'text/csv', csv)}>Download CSV</button>
+      <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.json`, "application/json", json)}>Download JSON</button>
+      <button className="px-2 py-1 rounded border" onClick={() => dl(`session-${report.meta.id}.csv`, "text/csv", csv)}>Download CSV</button>
     </div>
   );
 }
 
 function Transcript({ turns }: { turns: Turn[] }) {
-  const [q, setQ] = React.useState('');
-  const filtered = q.trim() ? turns.filter(t => (t.text || '').toLowerCase().includes(q.toLowerCase())) : turns;
+  const [q, setQ] = React.useState("");
+  const filtered = q.trim() ? turns.filter(t => (t.text || "").toLowerCase().includes(q.toLowerCase())) : turns;
   return (
     <div>
       <div className="mb-2 flex items-center gap-2">
@@ -117,7 +121,7 @@ export default function ReportPollClient({ id }: { id: string }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  if (loading) return <div className="p-6 text-gray-600">Preparing reportâ€¦ retrying</div>;
+  if (loading) return <div className="p-6 text-gray-600">Preparing report... retrying</div>;
   if (!report) return <div className="p-6 text-red-600">Report not found. The transcript may not have been saved.</div>;
 
   const analytics = buildAnalytics(report.turns);
@@ -195,21 +199,21 @@ export default function ReportPollClient({ id }: { id: string }) {
             <div className="h-3 bg-gray-200 rounded overflow-hidden mt-1">
               <div className="h-3 bg-blue-600" style={{ width: `${analytics.talkTime.userPct}%` }} />
             </div>
-            <div className="text-xs text-gray-600 mt-1">You {analytics.talkTime.userPct}% · Participant {analytics.talkTime.assistantPct}%</div>
-            <div className="mt-2 text-sm">Overall Score: <span className="font-semibold" title={String((analytics.score as any)?.tooltip || '')}>{analytics.score.total}/100</span> <abbr title={String((analytics.score as any)?.tooltip || '')} className="text-xs text-gray-500 align-middle cursor-help">â“˜</abbr></div>
+            <div className="text-xs text-gray-600 mt-1">You {analytics.talkTime.userPct}% - Participant {analytics.talkTime.assistantPct}%</div>
+            <div className="mt-2 text-sm">Overall Score: <span className="font-semibold" title={String((analytics.score as any)?.tooltip || '')}>{analytics.score.total}/100</span></div>
           </div>
           <div className="rounded border p-3 bg-white">
             <div className="text-sm text-gray-600">Question Types</div>
             <div className="mt-1 text-xs text-gray-700">
-              Open {analytics.questions.open} · Closed {analytics.questions.closed} · Rapport {analytics.questions.rapport} · Fact-check {analytics.questions.factcheck}
+              Open {analytics.questions.open} - Closed {analytics.questions.closed} - Rapport {analytics.questions.rapport} - Fact-check {analytics.questions.factcheck}
             </div>
-            <div className="text-xs text-gray-600 mt-2">Avg response length: You {avgUserWords} words · Participant {avgPersonaWords} words</div>
-            <div className="text-xs text-gray-600 mt-1">Turns: You {userTurns.length} · Participant {personaTurns.length}</div>
+            <div className="text-xs text-gray-600 mt-2">Avg response length: You {avgUserWords} words - Participant {avgPersonaWords} words</div>
+            <div className="text-xs text-gray-600 mt-1">Turns: You {userTurns.length} - Participant {personaTurns.length}</div>
           </div>
           <div className="rounded border p-3 bg-white">
             <div className="text-sm text-gray-600">Filler Words</div>
-            <div className="text-xs text-gray-700">You: {(analytics.fillers?.user ?? 0)} total{analytics.fillers?.perMinute ? ` · ${analytics.fillers.perMinute.user}/min` : ''}{fillerTopUser.length ? ` · Top: ${fillerTopUser.map((x:any)=>`${x.word} ${x.count}`).join(', ')}` : ''}</div>
-            <div className="text-xs text-gray-700">Participant: {(analytics.fillers?.assistant ?? 0)} total{analytics.fillers?.perMinute ? ` · ${analytics.fillers.perMinute.assistant}/min` : ''}{fillerTopAsst.length ? ` · Top: ${fillerTopAsst.map((x:any)=>`${x.word} ${x.count}`).join(', ')}` : ''}</div>
+            <div className="text-xs text-gray-700">You: {(analytics.fillers?.user ?? 0)} total{analytics.fillers?.perMinute ? ` - ${analytics.fillers.perMinute.user}/min` : ''}{fillerTopUser.length ? ` - Top: ${fillerTopUser.map((x:any)=>`${x.word} ${x.count}`).join(', ')}` : ''}</div>
+            <div className="text-xs text-gray-700">Participant: {(analytics.fillers?.assistant ?? 0)} total{analytics.fillers?.perMinute ? ` - ${analytics.fillers.perMinute.assistant}/min` : ''}{fillerTopAsst.length ? ` - Top: ${fillerTopAsst.map((x:any)=>`${x.word} ${x.count}`).join(', ')}` : ''}</div>
           </div>
         </div>
         {/* Breakdown row */}
@@ -246,7 +250,7 @@ export default function ReportPollClient({ id }: { id: string }) {
             </ul>
             {Array.isArray((analytics as any)?.insightsQuotes?.strengths) ? (
               (analytics as any).insightsQuotes.strengths.slice(0,3).map((q: any, i: number) => (
-                <blockquote key={`s-${i}`} className="border-l-4 pl-3 italic text-gray-700">â€œ{q.quote}â€ â€” {q.note}</blockquote>
+                <blockquote key={`s-${i}`} className="border-l-4 pl-3 italic text-gray-700">"{q.quote}" — {q.note}</blockquote>
               ))
             ) : null}
           </div>
@@ -257,7 +261,7 @@ export default function ReportPollClient({ id }: { id: string }) {
             </ul>
             {Array.isArray((analytics as any)?.insightsQuotes?.improvements) ? (
               (analytics as any).insightsQuotes.improvements.slice(0,3).map((q: any, i: number) => (
-                <blockquote key={`i-${i}`} className="border-l-4 pl-3 italic text-gray-700">â€œ{q.quote}â€ â€” {q.note}{q.suggestion ? ` (Try: ${q.suggestion})` : ''}</blockquote>
+                <blockquote key={`i-${i}`} className="border-l-4 pl-3 italic text-gray-700">"{q.quote}" — {q.note}{q.suggestion ? ` (Try: ${q.suggestion})` : ''}</blockquote>
               ))
             ) : null}
           </div>
@@ -280,8 +284,8 @@ export default function ReportPollClient({ id }: { id: string }) {
             <Transcript turns={report.turns} />
           )}
         </details>
-        <div className="text-xs text-gray-600 mt-2">Total words: You {userWords} · Participant {personaWords}</div>
-        <div className="text-xs text-gray-600">Total turns: You {userTurns.length} · Participant {personaTurns.length}</div>
+        <div className="text-xs text-gray-600 mt-2">Total words: You {userWords} - Participant {personaWords}</div>
+        <div className="text-xs text-gray-600">Total turns: You {userTurns.length} - Participant {personaTurns.length}</div>
       </section>
 
       <section className="rounded border p-4">
@@ -291,5 +295,3 @@ export default function ReportPollClient({ id }: { id: string }) {
     </div>
   );
 }
-
-

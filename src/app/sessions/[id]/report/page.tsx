@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 async function fetchReport(id: string): Promise<SessionReport | null> {
   try {
-    const base = process.env.NEXT_PUBLIC_BASE_URL || '';
+    const base = process.env.NEXT_PUBLIC_BASE_URL || "";
     const res = await fetch(`${base}/api/sessions/${id}/report`, { cache: "no-store" });
     if (!res.ok) return null;
     const j = await res.json();
@@ -18,7 +18,7 @@ async function fetchReport(id: string): Promise<SessionReport | null> {
 
 function fmt(ts: number) {
   const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 function toTxt(turns: Turn[]) {
@@ -32,16 +32,18 @@ function toCsv(turns: Turn[]) {
 }
 
 function dl(name: string, mime: string, data: string) {
-  'use client';
+  "use client";
   const blob = new Blob([data], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = name; a.click();
+  a.href = url;
+  a.download = name;
+  a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function Downloads({ report }: { report: SessionReport }) {
-  'use client';
+  "use client";
   const json = JSON.stringify(report, null, 2);
   const txt = toTxt(report.turns);
   const csv = toCsv(report.turns);
@@ -56,7 +58,7 @@ function Downloads({ report }: { report: SessionReport }) {
     <hr/>
     ${report.turns.map(t=>`<div class="line">[${fmt(t.at)}] <strong>${t.speaker==='user'?'You':'Participant'}:</strong> ${String(t.text).replace(/</g,'&lt;')}</div>`).join('')}
     </body></html>`;
-    const w = window.open('', '_blank');
+    const w = window.open("", "_blank");
     if (!w) return;
     w.document.open();
     w.document.write(html);
@@ -74,10 +76,10 @@ function Downloads({ report }: { report: SessionReport }) {
 }
 
 function Transcript({ turns }: { turns: Turn[] }) {
-  'use client';
-  const React = require('react') as typeof import('react');
-  const [q, setQ] = React.useState('');
-  const filtered = q.trim() ? turns.filter(t => (t.text || '').toLowerCase().includes(q.toLowerCase())) : turns;
+  "use client";
+  const React = require("react") as typeof import("react");
+  const [q, setQ] = React.useState("");
+  const filtered = q.trim() ? turns.filter(t => (t.text || "").toLowerCase().includes(q.toLowerCase())) : turns;
   return (
     <div>
       <div className="mb-2 flex items-center gap-2">
@@ -112,9 +114,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const tsStop  = te.length ? new Date(Math.max(...te)) : null;
   const started = meta.startedAt ? new Date(meta.startedAt) : tsStart;
   const stopped = meta.stoppedAt ? new Date(meta.stoppedAt) : tsStop;
-  const durationMs = typeof meta.durationMs === 'number'
-    ? meta.durationMs
-    : (started && stopped ? (stopped.getTime() - started.getTime()) : 0);
+  const durationMs = typeof meta.durationMs === 'number' ? meta.durationMs : (started && stopped ? (stopped.getTime() - started.getTime()) : 0);
   const durationLabel = formatMmSs(durationMs);
 
   const userTurns = analytics.words.user.turns;
@@ -170,7 +170,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <div className="text-xs italic text-gray-500 mt-1">Reason: {String((report as any).scoreReason)}</div>
           ) : null}
           {meta.personaSummary ? (
-            <div className="mt-2 text-gray-600">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} · {String((meta.personaSummary as any)?.techFamiliarity ?? '')} · {String((meta.personaSummary as any)?.personality ?? '')}</div>
+            <div className="mt-2 text-gray-600">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} - {String((meta.personaSummary as any)?.techFamiliarity ?? '')} - {String((meta.personaSummary as any)?.personality ?? '')}</div>
           ) : null}
           {(meta as any)?.emotionSummary ? (
             <div className="text-xs text-gray-600">Tone (Hume): {(meta as any).emotionSummary}</div>
@@ -186,10 +186,10 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <div className="h-3 bg-gray-200 rounded overflow-hidden mt-1" title="Balance between your talk vs persona">
               <div className="h-3 bg-blue-600" style={{ width: `${analytics.talkTime.userPct}%` }} />
             </div>
-            <div className="text-xs text-gray-600 mt-1">You {analytics.talkTime.userPct}% · Participant {analytics.talkTime.assistantPct}%</div>
+            <div className="text-xs text-gray-600 mt-1">You {analytics.talkTime.userPct}% - Participant {analytics.talkTime.assistantPct}%</div>
             <div className="mt-2 text-sm flex items-center gap-2">
               <span>
-                Overall Score: <span className="font-semibold" title={String(score?.tooltip || '')}>{analytics.score.total}/100</span> <abbr title={String(score?.tooltip || '')} className="text-xs text-gray-500 align-middle cursor-help">?</abbr>
+                Overall Score: <span className="font-semibold" title={String(score?.tooltip || '')}>{analytics.score.total}/100</span>
               </span>
               {analytics.flags.hostility ? (
                 <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-700" title="Hostility detected in transcript">Respect flag</span>
@@ -199,12 +199,12 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           <div className="rounded border p-3 bg-white">
             <div className="text-sm text-gray-600">Question Types</div>
             <div className="mt-1 text-xs text-gray-700">
-              Open {analytics.questions.open} · Closed {analytics.questions.closed} · Rapport {analytics.questions.rapport} · Fact-check {analytics.questions.factcheck}
+              Open {analytics.questions.open} - Closed {analytics.questions.closed} - Rapport {analytics.questions.rapport} - Fact-check {analytics.questions.factcheck}
             </div>
             <div className="text-xs text-gray-600 mt-1">Follow-up {analytics.questionTypes ? analytics.questionTypes.followUp : 0}</div>
-            <div className="text-xs text-gray-600 mt-2">Avg response length: You {avgUserWords} words · Participant {avgPersonaWords} words</div>
-            <div className="text-xs text-gray-600 mt-1">Turns: You {userTurns} · Participant {personaTurns}</div>
-            <div className="text-xs text-gray-600 mt-1">Total words: You {userWords} · Participant {personaWords}</div>
+            <div className="text-xs text-gray-600 mt-2">Avg response length: You {avgUserWords} words - Participant {avgPersonaWords} words</div>
+            <div className="text-xs text-gray-600 mt-1">Turns: You {userTurns} - Participant {personaTurns}</div>
+            <div className="text-xs text-gray-600 mt-1">Total words: You {userWords} - Participant {personaWords}</div>
             <div className="text-xs text-gray-600 mt-1">Fillers (you): {fillerUser}{fillerTop.length ? ` - ` : ''}{fillerTop.map(x=>`${x.word} ${x.count}`).join(', ')}</div>
           </div>
           <div className="rounded border p-3 bg-white">
@@ -213,7 +213,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             {started ? <div className="text-xs text-gray-700">Started: {started.toLocaleString()}</div> : null}
             {stopped ? <div className="text-xs text-gray-700">Stopped: {stopped.toLocaleString()}</div> : null}
             {meta.personaSummary ? (
-              <div className="text-xs text-gray-600 mt-1">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} · {String((meta.personaSummary as any)?.techFamiliarity ?? '')} · {String((meta.personaSummary as any)?.personality ?? '')}</div>
+              <div className="text-xs text-gray-600 mt-1">Persona: {String((meta.personaSummary as any)?.name ?? 'Participant')} - {String((meta.personaSummary as any)?.techFamiliarity ?? '')} - {String((meta.personaSummary as any)?.personality ?? '')}</div>
             ) : null}
           </div>
         </div>
@@ -230,8 +230,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <Transcript turns={report.turns} />
           )}
         </details>
-        <div className="text-xs text-gray-600 mt-2">Total words: You {userWords} · Participant {personaWords}</div>
-        <div className="text-xs text-gray-600">Total turns: You {userTurns} · Participant {personaTurns}</div>
+        <div className="text-xs text-gray-600 mt-2">Total words: You {userWords} - Participant {personaWords}</div>
+        <div className="text-xs text-gray-600">Total turns: You {userTurns} - Participant {personaTurns}</div>
       </section>
 
       <section className="rounded border p-4">

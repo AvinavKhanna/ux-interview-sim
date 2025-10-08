@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+﻿import { NextResponse } from 'next/server';
 import { openai } from '@/lib/openai';
 import { CHAT_MODEL } from '@/lib/models';
 import { supabaseServer } from '@/lib/supabase';
@@ -72,7 +72,7 @@ Persona summary:
 ${personaContext || 'N/A'}
 
 Rules:
-- Answer naturally in 1–3 concise sentences.
+- Answer naturally in 1â€“3 concise sentences.
 - Do not over-disclose information unless specifically probed.
 - Maintain consistency with the persona summary; avoid contradictions.
 - If unclear, ask one brief clarifying question first.`;
@@ -121,9 +121,12 @@ Rules:
     const toneFriendlyScore = recentUsers.reduce((n, s) => n + (isFriendlyTone(s) || isCalmEncouraging(s) ? 1 : 0), 0) / Math.max(1, recentUsers.length);
     const toneRudeScore = recentUsers.reduce((n, s) => n + (isRudeTone(s) || isImpatientTone(s) || isDismissiveAggressive(s) ? 1 : 0), 0) / Math.max(1, recentUsers.length);
 
-    // Rapport with smoothing and tone effects (one rude line won’t fully reset trust)
+    // Rapport with smoothing and tone effects (one rude line wonâ€™t fully reset trust)
     let rapport = Math.min(1, Math.max(0, rapportBase + 0.15 * toneFriendlyScore - 0.10 * toneRudeScore));
-    const easing = 1 - Math.min(0.8, Math.max(0, rapport));
+    // Hold personality influence longer: ramp rapport effect over ~6 user turns
+    const rapportRamp = Math.min(1, Math.max(0, (userTurnCount - 1) / 5));
+    const effectiveRapport = Math.min(1, Math.max(0, rapport) * rapportRamp);
+    const easing = 1 - Math.min(0.8, Math.max(0, effectiveRapport));
 
     // Baseline runtime shape
     let directness = Math.max(0.0, 0.6 * negMood);
@@ -135,12 +138,12 @@ Rules:
     // Adaptation to interviewer tone & rapport (subtle; never flips personality)
     let guardednessDelta = 0;
     if (rapport >= 0.4 && toneFriendlyScore >= 0.34) {
-      const boost = 0.15 + 0.10 * toneFriendlyScore; // 15–25%
+      const boost = 0.15 + 0.10 * toneFriendlyScore; // 15â€“25%
       elaboration = Math.min(1.0, elaboration * (1 + boost));
       targetTokens = Math.round(targetTokens * (1 + boost));
       guardednessDelta = Math.max(guardednessDelta, -0.2);
     } else if (toneRudeScore >= 0.34) {
-      const cut = 0.25 + 0.15 * toneRudeScore; // 25–40%
+      const cut = 0.25 + 0.15 * toneRudeScore; // 25â€“40%
       elaboration = Math.max(0.2, elaboration * (1 - cut));
       targetTokens = Math.max(16, Math.round(targetTokens * (1 - cut)));
       guardednessDelta = Math.min(0.3, guardednessDelta + 0.3);
@@ -159,7 +162,7 @@ Rules:
     const tiredish = /(tired|exhausted|long day)/.test(instr);
     let hesitationMs = 0;
     if (tiredish) {
-      hesitationMs += Math.round(200 + Math.random() * 200); // +200–400ms
+      hesitationMs += Math.round(200 + Math.random() * 200); // +200â€“400ms
       targetTokens = Math.max(16, Math.round(targetTokens * (1 - (0.15 + 0.10 * decay))));
     }
     // Bad day / frustrated / stressed: shorten more; allow soft frustration markers sometimes
@@ -202,18 +205,18 @@ Rules:
       sessionSummary && `Session Summary (for context):\n${sessionSummary}`,
       `You are the interviewee in a UX interview simulator.
 - Stay strictly in character; embody the persona's background and personality.
-- Be concise and natural (1–3 sentences unless asked to elaborate).
+- Be concise and natural (1â€“3 sentences unless asked to elaborate).
 - Do not over-disclose information; reveal details only when probed.
 - Maintain context awareness across turns; avoid contradictions.
 - If the question is unclear, ask one brief clarifying question first.
-- If asked multi‑part questions, address each part directly.`,
+- If asked multiâ€‘part questions, address each part directly.`,
     ]
       .filter(Boolean)
       .join('\n\n') + (attitudeRules ? '\n\n' + attitudeRules : '');
     // Append phase-aware disclosure rules
     try { if (phaseRules) { system += '\n\n' + phaseRules; } } catch {}
     // Rapport progression & tone adaptation guidance (subtle)
-    system += `\nRapport curve: <0.3 cautious & brief; 0.3–0.6 moderate openness; >0.6 open within persona limits.`;
+    system += `\nRapport curve: <0.3 cautious & brief; 0.3â€“0.6 moderate openness; >0.6 open within persona limits.`;
     system += `\nTone adapt: if interviewer is warm/calm and rapport>=0.4, increase elaboration slightly; if rude/impatient, be terser and raise guardedness a bit.`;
     // Append runtime shaping guidance
     try {
@@ -223,7 +226,7 @@ Rules:
         system += `\nIf feeling low energy, you may add: "Could we keep questions simple today?" (no more than once every 3 turns).`;
       }
       if (cranky && (userTurnCount % 2 === 0)) {
-        system += `\nYou may use a soft frustration marker once every 2–3 turns (e.g., "Honestly,", "Look,") while staying professional.`;
+        system += `\nYou may use a soft frustration marker once every 2â€“3 turns (e.g., "Honestly,", "Look,") while staying professional.`;
       }
       if (moodPos && (userTurnCount % 3 === 1)) {
         system += `\nOnce every few turns, add a brief encouragement (e.g., "Sure, I can walk through that").`;
@@ -231,12 +234,12 @@ Rules:
       if (canClarifyLowTech) {
         system += `\nBefore answering, politely clarify jargon: "Sorry, what do you mean by '${jargonHit}'?" (no more than once every 2 turns).`;
       } else if (techLevel >= 0.7) {
-        system += `\nTech-level: high — it’s okay to use precise terminology naturally.`;
+        system += `\nTech-level: high â€” itâ€™s okay to use precise terminology naturally.`;
       } else if (techLevel >= 0.4 && techLevel < 0.7 && (userTurnCount % 4 === 0)) {
-        system += `\nTech-level: medium — occasionally confirm terms (e.g., "You mean the settings screen?").`;
+        system += `\nTech-level: medium â€” occasionally confirm terms (e.g., "You mean the settings screen?").`;
       }
       if (analLevel >= 0.5 && whyHow) {
-        system += `\nIf asked why/how, use a compact 2–3 step structure and keep each part brief.`;
+        system += `\nIf asked why/how, use a compact 2â€“3 step structure and keep each part brief.`;
       }
       if (friendlyLevel >= 0.5 && !(isImpatient || isGuarded)) {
         system += `\nInclude a brief acknowledgment (e.g., "Thanks for asking") and a light invite occasionally (e.g., "Happy to explain more if helpful").`;
