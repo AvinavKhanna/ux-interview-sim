@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import * as React from 'react';
 import type { SessionReport, Turn } from '@/types/report';
@@ -117,7 +117,7 @@ export default function ReportPollClient({ id }: { id: string }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  if (loading) return <div className="p-6 text-gray-600">Preparing report… retrying</div>;
+  if (loading) return <div className="p-6 text-gray-600">Preparing reportâ€¦ retrying</div>;
   if (!report) return <div className="p-6 text-red-600">Report not found. The transcript may not have been saved.</div>;
 
   const analytics = buildAnalytics(report.turns);
@@ -196,7 +196,7 @@ export default function ReportPollClient({ id }: { id: string }) {
               <div className="h-3 bg-blue-600" style={{ width: `${analytics.talkTime.userPct}%` }} />
             </div>
             <div className="text-xs text-gray-600 mt-1">You {analytics.talkTime.userPct}% · Participant {analytics.talkTime.assistantPct}%</div>
-            <div className="mt-2 text-sm">Overall Score: <span className="font-semibold" title={String((analytics.score as any)?.tooltip || '')}>{analytics.score.total}/100</span> <abbr title={String((analytics.score as any)?.tooltip || '')} className="text-xs text-gray-500 align-middle cursor-help">ⓘ</abbr></div>
+            <div className="mt-2 text-sm">Overall Score: <span className="font-semibold" title={String((analytics.score as any)?.tooltip || '')}>{analytics.score.total}/100</span> <abbr title={String((analytics.score as any)?.tooltip || '')} className="text-xs text-gray-500 align-middle cursor-help">â“˜</abbr></div>
           </div>
           <div className="rounded border p-3 bg-white">
             <div className="text-sm text-gray-600">Question Types</div>
@@ -246,7 +246,7 @@ export default function ReportPollClient({ id }: { id: string }) {
             </ul>
             {Array.isArray((analytics as any)?.insightsQuotes?.strengths) ? (
               (analytics as any).insightsQuotes.strengths.slice(0,3).map((q: any, i: number) => (
-                <blockquote key={`s-${i}`} className="border-l-4 pl-3 italic text-gray-700">“{q.quote}” — {q.note}</blockquote>
+                <blockquote key={`s-${i}`} className="border-l-4 pl-3 italic text-gray-700">â€œ{q.quote}â€ â€” {q.note}</blockquote>
               ))
             ) : null}
           </div>
@@ -257,7 +257,7 @@ export default function ReportPollClient({ id }: { id: string }) {
             </ul>
             {Array.isArray((analytics as any)?.insightsQuotes?.improvements) ? (
               (analytics as any).insightsQuotes.improvements.slice(0,3).map((q: any, i: number) => (
-                <blockquote key={`i-${i}`} className="border-l-4 pl-3 italic text-gray-700">“{q.quote}” — {q.note}{q.suggestion ? ` (Try: ${q.suggestion})` : ''}</blockquote>
+                <blockquote key={`i-${i}`} className="border-l-4 pl-3 italic text-gray-700">â€œ{q.quote}â€ â€” {q.note}{q.suggestion ? ` (Try: ${q.suggestion})` : ''}</blockquote>
               ))
             ) : null}
           </div>
@@ -291,3 +291,5 @@ export default function ReportPollClient({ id }: { id: string }) {
     </div>
   );
 }
+
+
